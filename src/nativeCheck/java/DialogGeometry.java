@@ -27,7 +27,7 @@ final class DialogGeometry {
         /** Dialog list with exit footer: the previous corner-close false transport, kept as a fault control. */
         LIST_FOOTER
     }
-    record Layout(int header, int footer, int viewport, int bodyY, int bodyHeight, double maxScroll,
+    record Layout(int header, int footer, int viewport, int bodyX, int bodyY, int bodyHeight, double maxScroll,
                   boolean escape, List<Identifier> escapeSent) {}
 
     private static final Identifier EXIT = Identifier.parse("lumamenu:footer");
@@ -84,7 +84,7 @@ final class DialogGeometry {
         if (closesOnEsc) screen.keyPressed(new KeyEvent(com.mojang.blaze3d.platform.InputConstants.KEY_ESCAPE, 0, 0));
         Screen after = gui.selected;
         return new Layout(layout.getHeaderHeight(), layout.getFooterHeight(), layout.getContentHeight(),
-            widget.getY(), widget.getHeight(), max[0], closesOnEsc && after == null, List.copyOf(sent));
+            widget.getX(), widget.getY(), widget.getHeight(), max[0], closesOnEsc && after == null, List.copyOf(sent));
     }
 
     static Component rows(int count) {

@@ -207,6 +207,11 @@ final class Layouts {
         double width = canvas == null ? 452 : number(canvas, "width", 452, 1, 452);
         double height = canvas == null ? Calibration.HEIGHT
             : number(canvas, "height", Calibration.HEIGHT, 1, Calibration.HEIGHT);
+        // The Dialog body is centred horizontally and padded to whole rows vertically, so only these sizes line up.
+        if (width != Math.rint(width) || (452 - (int) width) % 2 != 0)
+            throw new IllegalArgumentException(id + "：canvas.width需为偶数整数");
+        if (height != Math.rint(height) || (Calibration.HEIGHT - (int) height) % 18 != 0)
+            throw new IllegalArgumentException(id + "：canvas.height需为180、162、144…18（180减18的整数倍）");
         ConfigurationSection frontend = section(source, "frontend", true);
         List<Visual> visuals = new ArrayList<>();
         List<Control> controls = new ArrayList<>();
@@ -228,9 +233,10 @@ final class Layouts {
         List<Region> regions = resolve(controls, (int) width, (int) height, originX, originY);
         int rows = (int) Math.ceil(height / 9);
         var surface = HitSurface.compile(regions, originX, originY, rows);
-        if (Boolean.FALSE.equals(corner) && surface.stream().anyMatch(p -> p.row() >= HitSurface.footerRows(rows)))
-            throw new IllegalArgumentException(id + "：corner-close: false 时最后两行（Y≥"
-                + (HitSurface.footerRows(rows) * 9) + "）留给原生关闭按钮，不能放点击区域");
+        int footerRows = HitSurface.usableRows(rows, originY, true);
+        if (Boolean.FALSE.equals(corner) && surface.stream().anyMatch(p -> p.row() >= footerRows))
+            throw new IllegalArgumentException(id + "：corner-close: false 时画布Y≥" + (footerRows * 9)
+                + "留给原生关闭按钮，不能放点击区域");
         int advance = (int) width + 2;
         int bodyWidth = advance + 8;
         if (bodyWidth > 1024) throw new IllegalArgumentException(id + "：Dialog正文宽度不能超过1024");

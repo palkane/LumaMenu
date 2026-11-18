@@ -11,8 +11,28 @@ import java.util.*;
 
 final class HitSurface {
     static final int ROWS = 20, ADVANCE = 454, BODY_WIDTH = 462;
-    /** Body rows under the native close footer: the notice footer outgrows the list's grid spacing by two rows. */
-    static int footerRows(int rows) { return Math.max(1, rows - 2); }
+    /**
+     * Rows every Dialog body carries so the native screen places it exactly like the calibration frame: 20, or 18 under
+     * the native close footer (the notice footer outgrows the list's grid spacing by two rows).
+     */
+    static int frameRows(boolean footer) { return footer ? ROWS - 2 : ROWS; }
+    /** Canvas rows that still fit in that frame once the canvas starts {@code originY / 9} rows down. */
+    static int usableRows(int rows, int originY, boolean footer) {
+        return Math.max(0, Math.min(rows, frameRows(footer) - originY / 9));
+    }
+    /** Pads a canvas body with blank full-width rows above and below so it sits at its place in the frame. */
+    static Component frame(Component body, int originY, int rows, int advance, boolean footer) {
+        int lead = originY / 9, trail = frameRows(footer) - lead - rows;
+        if (originY % 9 != 0 || rows < 1 || trail < 0) throw new IllegalArgumentException("画布无法对齐Dialog行");
+        if (lead == 0 && trail == 0) return body;
+        String blank = move(advance);
+        return Component.text().font(SPACE)
+            .append(Component.text((blank + "\n").repeat(lead)))
+            .append(body)
+            .append(Component.text(("\n" + blank).repeat(trail)))
+            .build().decoration(TextDecoration.BOLD, false).decoration(TextDecoration.ITALIC, false)
+            .shadowColor(ShadowColor.none());
+    }
     private static final Key FONT = Key.key("lumamenu", "hit");
     /**
      * Visible twin of the hit glyphs. A visible 1-pixel bitmap glyph advances 2 in 26.3, so each unit is drawn as a

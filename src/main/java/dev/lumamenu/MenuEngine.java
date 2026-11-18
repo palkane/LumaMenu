@@ -270,13 +270,14 @@ final class MenuEngine implements LumaMenuApi {
         stamps.put(session.player.getUniqueId(), new Stamp(session.id, actions.nonce));
         boolean corner = page.cornerClose(host.cornerClose());
         var hit = compiled.hit(calibration.get(session.player.getUniqueId()), page.id(), session.mode, session.down);
-        int rows = corner ? page.surfaceRows() : HitSurface.footerRows(page.surfaceRows());
-        if (!corner && allowed.stream().anyMatch(index -> hit.surface().stream()
+        int rows = HitSurface.usableRows(page.surfaceRows(), page.surfaceOriginY(), !corner);
+        if (allowed.stream().anyMatch(index -> (corner ? hit.chrome().surface() : hit.surface()).stream()
                 .anyMatch(patch -> patch.control() == index && patch.row() >= rows)))
-            throw new IllegalStateException(page.id() + "：原生关闭按钮页的最后两行不能放点击区域");
-        host.show(session.player, HitSurface.bind(corner ? hit.chrome().surface() : hit.surface(),
+            throw new IllegalStateException(page.id() + "：原生关闭按钮页画布底部两行不能放点击区域");
+        host.show(session.player, HitSurface.frame(HitSurface.bind(corner ? hit.chrome().surface() : hit.surface(),
             clicks, tips, allowed, rows, page.surfaceAdvance(),
             corner ? hit.chrome() : null, exit, debug.contains(session.player.getUniqueId())),
+            page.surfaceOriginY(), rows, page.surfaceAdvance(), !corner),
             exit, page.bodyWidth(), corner);
     }
 

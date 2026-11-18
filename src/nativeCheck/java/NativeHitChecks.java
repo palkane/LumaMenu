@@ -138,6 +138,20 @@ public final class NativeHitChecks {
                 "fault control: list exit footer reproduces the reported 16-unit shift at 480x252");
             System.out.println("Footer geometry: notice matches calibration for 480x120..720; old list footer shifted at "
                 + shifted + " heights");
+            var frame = DialogGeometry.rows(rowsExpected);
+            int odd = 0;
+            for (int screen = 300; screen <= 700; screen++)
+                for (int canvas = 452; canvas >= 40; canvas -= 52) {
+                    var full = DialogGeometry.measure(frame, font, 462, DialogGeometry.Mode.CORNER, screen, 252);
+                    var narrow = DialogGeometry.measure(frame, font, canvas + 10, DialogGeometry.Mode.CORNER, screen, 252);
+                    if (full.bodyX() + 462 > screen - 10) continue;
+                    check(narrow.bodyX() == full.bodyX() + (452 - canvas) / 2 && narrow.bodyY() == full.bodyY(),
+                        "even canvas " + canvas + " starts at its frame origin on a " + screen + "-wide screen");
+                    var oddBody = DialogGeometry.measure(frame, font, canvas + 9, DialogGeometry.Mode.CORNER, screen, 252);
+                    if (oddBody.bodyX() != full.bodyX() + (452 - canvas + 1) / 2) odd++;
+                }
+            check(odd > 0, "fault control: odd canvas widths drift by half a unit on some screens");
+            System.out.println("Canvas geometry: even widths 452..88 align on every 300..700-wide screen that fits the frame; odd widths drift " + odd);
         }
         var lines = font.split(component, bodyWidth);
         check(lines.size() == rowsExpected, path + " actual native row framing");

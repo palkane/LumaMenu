@@ -122,7 +122,7 @@ public final class MenuChecks {
                 && r.box().y() >= 0 && r.box().y() + r.box().height() <= 10),
             "partly visible button clips to canvas; fully outside button has no hit region");
         fixture(overflow);
-        check(demo.controls().stream().anyMatch(c -> c.id().equals("ping") && c.box().width() == 118
+        check(demo.controls().stream().anyMatch(c -> c.id().equals("ping") && c.box().width() == 98
             && c.actions().equals(List.of("sound: UI_BUTTON_CLICK-0.5-1", "callback: ping"))),
             "familiar all/left order and full button rectangle");
         for (int schema : List.of(1, 2, 3)) {
@@ -209,6 +209,20 @@ public final class MenuChecks {
             "corner-close false rejects hits in the two rows kept for the native close button");
         check(!parse("schema-version: 3\nid: test\ncorner-close: false\nfrontend: {b: {type: button, content: x, width: 40, height: 12, offset: {x: 50, y: 150}, actions: close}}").isEmpty(),
             "corner-close false accepts hits above the last two rows");
+        rejects(() -> parse("id: test\ncanvas: {width: 215, height: 144}\nfrontend: {}"), "odd canvas width is rejected");
+        rejects(() -> parse("id: test\ncanvas: {width: 216, height: 150}\nfrontend: {}"), "canvas height off the row grid is rejected");
+        var compact = parse("schema-version: 3\nid: test\ncanvas: {width: 216, height: 144}\n"
+            + "pages: {compact: {frontend: {b: {type: button, content: x, width: 40, height: 20, offset: {x: 108, y: 136}, actions: close}}}}").get("compact");
+        check(compact.surfaceOriginX() == 118 && compact.surfaceOriginY() == 18 && compact.surfaceRows() == 16,
+            "compact canvas is centred on the frame grid");
+        Component compactBody = HitSurface.frame(HitSurface.bind(compact.chrome().surface(), Map.of(), Map.of(),
+            Set.of(0), compact.surfaceRows(), compact.surfaceAdvance(), compact.chrome(), ClickEvent.runCommand("/x")),
+            compact.surfaceOriginY(), compact.surfaceRows(), compact.surfaceAdvance(), false);
+        check(net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText().serialize(compactBody)
+            .split("\n", -1).length == HitSurface.ROWS, "compact body is padded to the 20 calibration rows");
+        check(HitSurface.usableRows(16, 18, true) == 16 && HitSurface.usableRows(20, 0, true) == 18,
+            "a compact canvas keeps all rows under the native close footer");
+        fixture(compact);
         for (String action : List.of("command-in-place: balance", "console: say hi"))
             check(!parse("id: test\nfrontend: {x: {type: button, content: x, actions: '" + action + "'}}").isEmpty(),
                 "accepts action " + action);
@@ -424,16 +438,16 @@ public final class MenuChecks {
         check(host.begins == 1 && host.ends == 0, "camera begins before initial presentation");
         check(handle.active() && renderer.active(client.id), "open uses restored cache even when source YAML is broken");
         int hide = host.hides;
-        String stale = clickAt(host.body(client.id), 226, 104);
+        String stale = clickAt(host.body(client.id), 157, 79);
         engine.click(client.player, stale);
         check(handle.page().equals("detail") && closed.isEmpty() && host.hides == hide, "open action changes page without closing session");
         UUID identity = handle.id();
         engine.click(client.player, stale);
         check(handle.page().equals("detail"), "old page token cannot navigate current page");
-        engine.click(client.player, clickAt(host.body(client.id), 161, 143));
+        engine.click(client.player, clickAt(host.body(client.id), 55, 127));
         check(handle.page().equals("demo") && handle.id().equals(identity) && closed.isEmpty(), "back preserves handle identity");
         check(host.begins == 1 && host.ends == 0, "page navigation does not restart spectator camera");
-        String ping = clickAt(host.body(client.id), 96, 104);
+        String ping = clickAt(host.body(client.id), 55, 79);
         engine.click(second.player, ping);
         check(callbacks.isEmpty(), "another UUID cannot consume action");
         engine.click(client.player, ping);
@@ -478,7 +492,7 @@ public final class MenuChecks {
         damageListener.callEvent(damage);
         check(damaged.active() && renderer.active(client.id), "cancelled attacks leave the menu open");
         damage.setCancelled(false);
-        String damagedToken = clickAt(host.body(client.id), 96, 104);
+        String damagedToken = clickAt(host.body(client.id), 55, 79);
         int damageHides = host.hides, damageEnds = host.ends, damageClosed = closed.size();
         damageListener.callEvent(damage);
         check(!damaged.active() && !renderer.active(client.id) && engine.stamp(client.id) == null
@@ -614,7 +628,7 @@ public final class MenuChecks {
         engine.demo(client.player, "demo");
         UUID session = engine.stamp(client.id).session();
         int hides = host.hides;
-        engine.click(client.player, clickAt(host.body(client.id), 356, 104));
+        engine.click(client.player, clickAt(host.body(client.id), 55, 103));
         check(engine.stamp(client.id).session().equals(session) && host.hides == hides,
             "coordinate menu opens from demo in the existing Dialog session");
         var page = pages.get("coordinates");
@@ -673,7 +687,7 @@ public final class MenuChecks {
                         .filter(packet -> value(packet.getEntityMetadata(), 23) instanceof Component)
                         .reduce((first, second) -> second)
                         .map(packet -> ((Component) value(packet.getEntityMetadata(), 23))
-                            .equals(TextLayout.component(range, 0x8B95A7, TextLayout.Format.DEFAULT)))
+                            .equals(TextLayout.component(range, 0x404040, TextLayout.Format.DEFAULT)))
                         .orElse(false), "click on each visible corner reports that cell's cached inclusive bounds");
                     check(start == packets.size() || packets.subList(start, packets.size()).stream()
                         .filter(WrapperPlayServerEntityMetadata.class::isInstance).count() <= 1,
@@ -819,7 +833,7 @@ public final class MenuChecks {
         check(scale.stream().anyMatch(s -> s.getX() < 0) && scale.stream().anyMatch(s -> s.getX() > 0),
             "coexisting players receive distinct enhanced and compatible transform metadata");
         byte[] cached = Files.readAllBytes(dir.resolve("compiled.json.gz"));
-        String stale = clickAt(host.body(first.id), 96, 104);
+        String stale = clickAt(host.body(first.id), 55, 79);
         engine.mode(first.player, RenderMode.COMPATIBLE);
         check(one.active() && two.active() && one.page().equals("demo")
             && engine.mode(first.player) == RenderMode.COMPATIBLE, "switch preserves both active handles and page");
@@ -827,7 +841,7 @@ public final class MenuChecks {
             "switch does not restart spectator or alter other player");
         engine.click(first.player, stale);
         check(callbacks.isEmpty(), "switch invalidates previous mode action tokens");
-        engine.click(first.player, clickAt(host.body(first.id), 96, 104));
+        engine.click(first.player, clickAt(host.body(first.id), 55, 79));
         check(callbacks.size() == 1, "switch publishes working action tokens for same page");
         for (RenderMode mode : RenderMode.values()) {
             engine.mode(first.player, mode);
@@ -838,7 +852,8 @@ public final class MenuChecks {
                     && !pages.get("transforms").controls().get(r.control()).actions().isEmpty())
                 .findFirst().orElseThrow();
             int count = callbacks.size();
-            engine.click(first.player, clickAt(host.body(first.id), region.box().x(), region.box().y()));
+            engine.click(first.player, clickAt(host.body(first.id),
+                region.box().x() - pages.get("transforms").surfaceOriginX(), region.box().y()));
             check(callbacks.size() == count + 1, "mode-specific transformed hit reaches actual callback: " + mode);
         }
         check(Arrays.equals(cached, Files.readAllBytes(dir.resolve("compiled.json.gz"))),
@@ -1834,15 +1849,17 @@ public final class MenuChecks {
         Component body = name.equals("calibration-close")
             ? HitSurface.body(java.util.stream.IntStream.range(0, controls.size())
                 .mapToObj(i -> new HitSurface.Hit(controls.get(i).box(), clicks.get(i), "")).toList(), exit)
-            : HitSurface.bind(chrome == null ? surface : chrome.surface(), clickMap, Map.of(), clickMap.keySet(),
-                rows, advance, chrome, exit);
+            : framed(HitSurface.bind(chrome == null ? surface : chrome.surface(), clickMap, Map.of(), clickMap.keySet(),
+                rows, advance, chrome, exit), originY, rows, advance);
+        // A smaller canvas is padded to the full frame, so the native check sees frame-relative rows.
+        boolean padded = originY % 9 == 0 && originY / 9 + rows <= HitSurface.ROWS && rows < HitSurface.ROWS;
         json.add("body", JsonParser.parseString(GsonComponentSerializer.gson().serialize(body)));
         json.add("boxes", boxes);
         json.addProperty("width", width);
-        json.addProperty("height", height);
+        json.addProperty("height", padded ? HitSurface.ROWS * 9 : height);
         json.addProperty("originX", originX);
-        json.addProperty("originY", originY);
-        json.addProperty("rows", rows);
+        json.addProperty("originY", padded ? 0 : originY);
+        json.addProperty("rows", padded ? HitSurface.ROWS : rows);
         json.addProperty("advance", advance);
         json.addProperty("bodyWidth", bodyWidth);
         Path dir = Path.of("build/native-evidence/fixtures");
@@ -1852,10 +1869,15 @@ public final class MenuChecks {
         Component debugBody = name.equals("calibration-close")
             ? HitSurface.body(java.util.stream.IntStream.range(0, controls.size())
                 .mapToObj(i -> new HitSurface.Hit(controls.get(i).box(), clicks.get(i), "")).toList(), exit, true)
-            : HitSurface.bind(chrome == null ? surface : chrome.surface(), clickMap, Map.of(), clickMap.keySet(),
-                rows, advance, chrome, exit, true);
+            : framed(HitSurface.bind(chrome == null ? surface : chrome.surface(), clickMap, Map.of(), clickMap.keySet(),
+                rows, advance, chrome, exit, true), originY, rows, advance);
         json.add("body", JsonParser.parseString(GsonComponentSerializer.gson().serialize(debugBody)));
         Files.writeString(dir.resolve(name + "-debug.json"), new Gson().toJson(json));
+    }
+
+    private static Component framed(Component body, int originY, int rows, int advance) {
+        return originY % 9 == 0 && originY / 9 + rows <= HitSurface.ROWS && rows < HitSurface.ROWS
+            ? HitSurface.frame(body, originY, rows, advance, false) : body;
     }
 
     private static final class Client {

@@ -1,130 +1,125 @@
 schema-version: 3
 id: demo
 look-down: true
-canvas: {width: 452, height: 180}
+# Hit area only; the panel border and title row may reach outside it.
+canvas: {width: 212, height: 126}
 pages:
   demo:
     title: 光幕菜单
     frontend:
-      shell: &shell
+      panel: &panel
         type: group
+        offset: {x: 106, y: 57}
         children:
-          panel: {type: rectangle, width: 444, height: 176, color: '#151A23', offset: {x: 226, y: 90}}
-          border: {type: frame, width: 444, height: 176, color: '#2C3442', offset: {x: 226, y: 90, z: 0.01}}
-          header: {type: rectangle, width: 442, height: 30, color: '#1C2330', offset: {x: 226, y: 17, z: 0.02}}
-          accent: {type: line, width: 442, height: 1, color: '#4F8CFF', offset: {x: 226, y: 32.5, z: 0.03}}
-      title: {type: text, content: 光幕菜单, size: 10, color: '#E6EAF2', offset: {x: 226, y: 17, z: 1}}
-      status-card: {type: rectangle, width: 236, height: 44, color: '#1C2330', offset: {x: 137, y: 62, z: 0.5}}
-      status-label: {type: text, content: 状态, size: 6, color: '#8B95A7', offset: {x: 37, y: 50, z: 1}}
+          outline: {type: frame, width: 212, height: 122, color: '#000000'}
+          fill: {type: rectangle, width: 210, height: 120, color: '#C6C6C6', offset: {z: 0.01}}
+          light-top: {type: rectangle, width: 208, height: 2, color: '#FFFFFF', offset: {x: -1, y: -59, z: 0.02}}
+          light-left: {type: rectangle, width: 2, height: 118, color: '#FFFFFF', offset: {x: -104, y: -1, z: 0.02}}
+          shade-right: {type: rectangle, width: 2, height: 118, color: '#555555', offset: {x: 104, y: 1, z: 0.02}}
+          shade-bottom: {type: rectangle, width: 208, height: 2, color: '#555555', offset: {x: 1, y: 59, z: 0.02}}
+      title: {type: text, content: 光幕菜单, color: '#404040', offset: {x: 106, y: 6, z: 1}}
       status:
         type: text
         content: '{status}'
-        color: '#E6EAF2'
-        line-width: 210
+        color: '#404040'
+        line-width: 150
         max-lines: 1
         alignment: left
-        offset: {x: 137, y: 66, z: 1}
+        offset: {x: 83, y: 27, z: 1}
       diamond-slot:
         type: group
-        offset: {x: 324, y: 62, z: 0.5}
-        children:
-          well: {type: rectangle, width: 42, height: 42, color: '#0F141C'}
-          rim: {type: frame, width: 42, height: 42, color: '#2C3442', offset: {z: 0.01}}
+        offset: {x: 177, y: 27, z: 0.5}
+        children: &slot
+          dark: {type: rectangle, width: 18, height: 18, color: '#373737'}
+          light: {type: rectangle, width: 17, height: 17, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
+          fill: {type: rectangle, width: 16, height: 16, color: '#8B8B8B', offset: {z: 0.02}}
       grass-slot:
         type: group
-        offset: {x: 384, y: 62, z: 0.5}
-        children:
-          well: {type: rectangle, width: 42, height: 42, color: '#0F141C'}
-          rim: {type: frame, width: 42, height: 42, color: '#2C3442', offset: {z: 0.01}}
+        offset: {x: 197, y: 27, z: 0.5}
+        children: *slot
       diamond:
         type: item
         source: minecraft:diamond
-        width: 28
-        height: 28
+        width: 16
+        height: 16
         tooltip: 原版物品
-        offset: {x: 324, y: 62, z: 2}
+        offset: {x: 177, y: 27, z: 2}
       grass:
         type: block
         source: minecraft:grass_block
-        width: 26
-        height: 26
+        width: 13
+        height: 13
         rotation: {x: 20, y: -30}
         tooltip: 立体方块
-        offset: {x: 384, y: 62, z: 2}
+        offset: {x: 197, y: 27, z: 2}
       ping:
         type: button
+        style: vanilla
         content: 测试回调
-        color: '#2A3240'
-        width: 118
-        height: 22
-        offset: {x: 96, y: 104, z: 3}
+        width: 98
+        height: 20
+        offset: {x: 55, y: 52, z: 3}
         tooltip: 点击按钮任意位置
         actions:
           all: 'sound: UI_BUTTON_CLICK-0.5-1'
           left: 'callback: ping'
       detail:
         type: button
+        style: vanilla
         content: 查看详情
-        color: '#3B6FE0'
-        width: 118
-        height: 22
-        offset: {x: 226, y: 104, z: 3}
+        width: 98
+        height: 20
+        offset: {x: 157, y: 52, z: 3}
         actions: 'open: detail'
       coordinates:
         type: button
+        style: vanilla
         content: 坐标校验
-        color: '#2A3240'
-        width: 118
-        height: 22
-        offset: {x: 356, y: 104, z: 3}
+        width: 98
+        height: 20
+        offset: {x: 55, y: 76, z: 3}
         actions: 'open: coordinates'
       calibrate:
         type: button
+        style: vanilla
         content: 重新定位
-        color: '#2A3240'
-        width: 118
-        height: 22
-        offset: {x: 161, y: 136, z: 3}
+        width: 98
+        height: 20
+        offset: {x: 157, y: 76, z: 3}
         actions: calibrate
       close:
         type: button
+        style: vanilla
         content: 关闭
-        color: '#7A2E38'
-        width: 118
-        height: 22
-        offset: {x: 291, y: 136, z: 3}
+        width: 200
+        height: 20
+        offset: {x: 106, y: 100, z: 3}
         actions: close
-      hint: {type: text, content: LumaMenu · 实体渲染 · 透明 Dialog 点击, size: 6, color: '#5F6B7D', offset: {x: 226, y: 164, z: 1}}
   detail:
     title: 详情
     frontend:
-      shell: *shell
-      title: {type: text, content: 实体显示 · Dialog 交互, size: 10, color: '#E6EAF2', offset: {x: 226, y: 17, z: 1}}
-      card: {type: rectangle, width: 380, height: 64, color: '#1C2330', offset: {x: 226, y: 80, z: 0.5}}
-      mark: {type: rectangle, width: 3, height: 64, color: '#4F8CFF', offset: {x: 37.5, y: 80, z: 0.6}}
+      panel: *panel
+      title: {type: text, content: 详情, color: '#404040', offset: {x: 106, y: 6, z: 1}}
       body:
         type: text
-        content: |-
-          文字、按钮、物品与方块均为只发给你的展示实体
-          点击由透明 Dialog 接收，换页保留会话、直接复用缓存
-        color: '#C9D1DE'
-        line-width: 340
-        max-lines: 3
-        alignment: left
-        offset: {x: 226, y: 80, z: 1}
+        content: 文字、按钮、物品与方块都是只发给你的展示实体，点击由透明 Dialog 接收；换页保留会话并复用缓存。
+        color: '#404040'
+        line-width: 196
+        max-lines: 4
+        offset: {x: 106, y: 46, z: 1}
       back:
         type: button
-        content: ← 返回
-        color: '#2A3240'
-        width: 118
-        height: 22
-        offset: {x: 161, y: 143, z: 2}
+        style: vanilla
+        content: 返回
+        width: 98
+        height: 20
+        offset: {x: 55, y: 100, z: 2}
         actions: back
       close:
         type: button
+        style: vanilla
         content: 关闭
-        color: '#7A2E38'
-        width: 118
-        height: 22
-        offset: {x: 291, y: 143, z: 2}
+        width: 98
+        height: 20
+        offset: {x: 157, y: 100, z: 2}
         actions: close
