@@ -205,6 +205,10 @@ public final class MenuChecks {
         check(evented.openEvents().size() == 1 && evented.closeEvents().equals(List.of("tell: bye"))
             && evented.cornerClose(true) == false && "test".equals(evented.file()), "events, corner-close override and source file parsed");
         rejects(() -> parse("id: test\ncorner-close: maybe\nfrontend: {}"), "corner-close must be boolean");
+        rejects(() -> parse("schema-version: 3\nid: test\ncorner-close: false\nfrontend: {b: {type: button, content: x, width: 40, height: 8, offset: {x: 50, y: 165}, actions: close}}"),
+            "corner-close false rejects hits in the two rows kept for the native close button");
+        check(!parse("schema-version: 3\nid: test\ncorner-close: false\nfrontend: {b: {type: button, content: x, width: 40, height: 12, offset: {x: 50, y: 150}, actions: close}}").isEmpty(),
+            "corner-close false accepts hits above the last two rows");
         for (String action : List.of("command-in-place: balance", "console: say hi"))
             check(!parse("id: test\nfrontend: {x: {type: button, content: x, actions: '" + action + "'}}").isEmpty(),
                 "accepts action " + action);
@@ -563,6 +567,9 @@ public final class MenuChecks {
         var footer = engine.open(owner.plugin, client.player, "demo", Map.of(), callbacks::add, closed::add);
         check(!GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("lumamenu:chrome"),
             "disabled corner-close emits no Dialog X");
+        check(net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                .serialize(host.body(client.id)).split("\n", -1).length == HitSurface.ROWS - 2
+            && !host.corners.getLast(), "native close page drops two body rows to keep the calibrated body Y");
         engine.click(client.player, identifier(host.exits.get(client.id)));
         check(!footer.active() && host.begins == host.ends, "footer callback restores cleanup when option is off");
         host.failShow = true;
@@ -666,7 +673,7 @@ public final class MenuChecks {
                         .filter(packet -> value(packet.getEntityMetadata(), 23) instanceof Component)
                         .reduce((first, second) -> second)
                         .map(packet -> ((Component) value(packet.getEntityMetadata(), 23))
-                            .equals(TextLayout.component(range, 0x404040, TextLayout.Format.DEFAULT)))
+                            .equals(TextLayout.component(range, 0x8B95A7, TextLayout.Format.DEFAULT)))
                         .orElse(false), "click on each visible corner reports that cell's cached inclusive bounds");
                     check(start == packets.size() || packets.subList(start, packets.size()).stream()
                         .filter(WrapperPlayServerEntityMetadata.class::isInstance).count() <= 1,

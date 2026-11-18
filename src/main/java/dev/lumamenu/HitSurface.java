@@ -11,6 +11,8 @@ import java.util.*;
 
 final class HitSurface {
     static final int ROWS = 20, ADVANCE = 454, BODY_WIDTH = 462;
+    /** Body rows under the native close footer: the notice footer outgrows the list's grid spacing by two rows. */
+    static int footerRows(int rows) { return Math.max(1, rows - 2); }
     private static final Key FONT = Key.key("lumamenu", "hit");
     /**
      * Visible twin of the hit glyphs. A visible 1-pixel bitmap glyph advances 2 in 26.3, so each unit is drawn as a

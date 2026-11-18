@@ -343,14 +343,15 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         @Override public void show(Player player, Component body, ClickEvent exit, int bodyWidth, boolean cornerClose) {
             var payload = (ClickEvent.Payload.Custom) exit.payload();
             Dialog dialog = Dialog.create(factory -> {
-                var type = DialogType.dialogList(RegistrySet.keySet(RegistryKey.DIALOG, List.of()));
-                if (!cornerClose)
-                    type.exitAction(ActionButton.builder(Component.text("关闭")).width(60)
+                // A notice adds a 33-high footer but drops the list's empty grid and its 10 spacing, so with two fewer
+                // body rows its footer+content height equals the corner list's and the body sits at the same Y.
+                DialogType type = cornerClose ? DialogType.dialogList(RegistrySet.keySet(RegistryKey.DIALOG, List.of())).build()
+                    : DialogType.notice(ActionButton.builder(Component.text("关闭")).width(60)
                         .action(DialogAction.customClick(payload.key(), payload.nbt())).build());
                 factory.empty().base(DialogBase.builder(Component.text(" ")).pause(false).canCloseWithEscape(!cornerClose)
                     .afterAction(DialogBase.DialogAfterAction.NONE)
                     .body(List.of(DialogBody.plainMessage(body, bodyWidth))).build())
-                    .type(type.build());
+                    .type(type);
             });
             ownDialogs.expect(player.getUniqueId());
             try { player.showDialog(dialog); }

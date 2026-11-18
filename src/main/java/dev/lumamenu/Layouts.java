@@ -227,11 +227,15 @@ final class Layouts {
         int originY = (int) Math.floor((Calibration.HEIGHT - height) / 2);
         List<Region> regions = resolve(controls, (int) width, (int) height, originX, originY);
         int rows = (int) Math.ceil(height / 9);
+        var surface = HitSurface.compile(regions, originX, originY, rows);
+        if (Boolean.FALSE.equals(corner) && surface.stream().anyMatch(p -> p.row() >= HitSurface.footerRows(rows)))
+            throw new IllegalArgumentException(id + "：corner-close: false 时最后两行（Y≥"
+                + (HitSurface.footerRows(rows) * 9) + "）留给原生关闭按钮，不能放点击区域");
         int advance = (int) width + 2;
         int bodyWidth = advance + 8;
         if (bodyWidth > 1024) throw new IllegalArgumentException(id + "：Dialog正文宽度不能超过1024");
         return new Page(id, title, permission, visuals, controls, regions,
-            HitSurface.compile(regions, originX, originY, rows), originX, originY,
+            surface, originX, originY,
             (int) width, (int) height, rows, advance, bodyWidth, null, lookDown, (Boolean) corner,
             openEvents, closeEvents, file);
     }

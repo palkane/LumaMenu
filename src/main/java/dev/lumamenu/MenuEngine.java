@@ -185,8 +185,7 @@ final class MenuEngine implements LumaMenuApi {
             close(player, Reason.ERROR, true);
             throw error;
         }
-        host.message(player, "依次点击左上、右下十字中心，每点3次，共6次；"
-            + (host.cornerClose() ? "右上角×" : "Esc") + "取消，不覆盖旧值。");
+        host.message(player, "依次点击左上、右下十字中心，每点3次，共6次；右上角×取消，不覆盖旧值。");
     }
 
     void reload(Path layouts) throws Exception {
@@ -271,8 +270,12 @@ final class MenuEngine implements LumaMenuApi {
         stamps.put(session.player.getUniqueId(), new Stamp(session.id, actions.nonce));
         boolean corner = page.cornerClose(host.cornerClose());
         var hit = compiled.hit(calibration.get(session.player.getUniqueId()), page.id(), session.mode, session.down);
+        int rows = corner ? page.surfaceRows() : HitSurface.footerRows(page.surfaceRows());
+        if (!corner && allowed.stream().anyMatch(index -> hit.surface().stream()
+                .anyMatch(patch -> patch.control() == index && patch.row() >= rows)))
+            throw new IllegalStateException(page.id() + "：原生关闭按钮页的最后两行不能放点击区域");
         host.show(session.player, HitSurface.bind(corner ? hit.chrome().surface() : hit.surface(),
-            clicks, tips, allowed, page.surfaceRows(), page.surfaceAdvance(),
+            clicks, tips, allowed, rows, page.surfaceAdvance(),
             corner ? hit.chrome() : null, exit, debug.contains(session.player.getUniqueId())),
             exit, page.bodyWidth(), corner);
     }
@@ -374,9 +377,9 @@ final class MenuEngine implements LumaMenuApi {
         ClickEvent exit = actions.bind(session::close);
         tokens.publish(session.player.getUniqueId(), actions);
         stamps.put(session.player.getUniqueId(), new Stamp(session.id, actions.nonce));
-        host.show(session.player, HitSurface.body(hits, host.cornerClose() ? exit : null,
-                debug.contains(session.player.getUniqueId())), exit, HitSurface.BODY_WIDTH,
-            host.cornerClose());
+        // Always the corner list: every page's body Y is derived from this one frame.
+        host.show(session.player, HitSurface.body(hits, exit,
+                debug.contains(session.player.getUniqueId())), exit, HitSurface.BODY_WIDTH, true);
     }
 
     @Override public void close(Player player) { close(player, Reason.CLOSED, true); }

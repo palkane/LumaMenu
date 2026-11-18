@@ -6,12 +6,30 @@ frontend:
     type: rectangle
     width: 440
     height: 176
-    color: '#C6C6C6'
+    color: '#151A23'
     offset: {x: 226, y: 90}
+  border:
+    type: frame
+    width: 440
+    height: 176
+    color: '#2C3442'
+    offset: {x: 226, y: 90, z: 0.01}
+  header:
+    type: rectangle
+    width: 438
+    height: 28
+    color: '#1C2330'
+    offset: {x: 226, y: 15, z: 0.02}
+  accent:
+    type: line
+    width: 438
+    height: 1
+    color: '#4F8CFF'
+    offset: {x: 226, y: 29.5, z: 0.03}
   title:
     type: text
     content: XYZ 拉伸与旋转
-    color: '#303030'
+    color: '#E6EAF2'
     width: 250
     offset: {x: 226, y: 15, z: 1}
   models:
@@ -51,18 +69,18 @@ frontend:
         width: 75
         height: 35
         thickness: 2
-        color: '#303030'
+        color: '#4F8CFF'
       line:
         type: line
         width: 70
         height: 2
         rotation: {z: 20}
-        color: '#FFFFFF'
+        color: '#E6EAF2'
       text:
         type: text
         content: XYZ
         width: 30
-        color: '#303030'
+        color: '#E6EAF2'
         stretch: {x: 1.2, y: 0.8}
         offset: {y: 28, z: 1}
   grid:
@@ -70,7 +88,7 @@ frontend:
     width: 40
     height: 30
     step: 10
-    color: '#555555'
+    color: '#8B95A7'
     stretch: {x: 1.2, y: 0.9, z: 1}
     rotation: {x: 10, y: -15, z: 20}
     offset: {x: 370, y: 65, z: 4}
@@ -78,8 +96,8 @@ frontend:
     actions: 'callback: grid'
   button:
     type: button
-    style: vanilla
     content: 点击整个按钮
+    color: '#3B6FE0'
     width: 130
     height: 24
     stretch: {x: 1.15, y: 0.85, z: 1}
@@ -90,5 +108,5 @@ frontend:
     type: text
     content: '{status}'
     width: 280
-    color: '#303030'
+    color: '#8B95A7'
     offset: {x: 226, y: 164, z: 6}

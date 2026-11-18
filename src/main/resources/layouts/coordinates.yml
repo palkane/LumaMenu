@@ -7,33 +7,39 @@ frontend:
     type: rectangle
     width: 480
     height: 220
-    color: '#C6C6C6'
+    color: '#151A23'
     offset: {x: 226, y: 80, z: -1}
+  header:
+    type: rectangle
+    width: 480
+    height: 30
+    color: '#1C2330'
+    offset: {x: 226, y: -15, z: -0.9}
   ruler:
     type: grid
     width: 460
     height: 180
     step: 10
-    color: '#888888'
+    color: '#3A4558'
     offset: {x: 230, y: 90}
     actions: 'callback: probe'
   reference:
     type: frame
     width: 452
     height: 180
-    color: '#FFFFFF'
+    color: '#4F8CFF'
     offset: {x: 226, y: 90, z: 1}
   title:
     type: text
     content: 十字坐标 · 每格10点击单位
     width: 330
     size: 9
-    color: '#404040'
+    color: '#E6EAF2'
     offset: {x: 226, y: -20, z: 2}
   result:
     type: text
     content: '{probe}'
     width: 440
     size: 7
-    color: '#404040'
+    color: '#8B95A7'
     offset: {x: 226, y: -7, z: 2}

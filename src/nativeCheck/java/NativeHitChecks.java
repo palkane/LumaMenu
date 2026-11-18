@@ -118,6 +118,27 @@ public final class NativeHitChecks {
                 System.out.println(path.getFileName() + " ShowDialog wire bytes: " + bytes);
             } finally { buffer.release(); }
         }
+        if (path.getFileName().toString().equals("demo.json")) {
+            var footerBody = DialogGeometry.rows(net.minecraft.util.Mth.clamp(rowsExpected - 2, 1, rowsExpected));
+            int shifted = 0;
+            for (int h = 120; h <= 720; h++) {
+                var corner = DialogGeometry.measure(component, font, bodyWidth, DialogGeometry.Mode.CORNER, 480, h);
+                var notice = DialogGeometry.measure(footerBody, font, bodyWidth, DialogGeometry.Mode.NOTICE, 480, h);
+                var old = DialogGeometry.measure(component, font, bodyWidth, DialogGeometry.Mode.LIST_FOOTER, 480, h);
+                check(notice.bodyY() == corner.bodyY() && notice.maxScroll() == corner.maxScroll()
+                        && notice.bodyHeight() == corner.bodyHeight() - 18,
+                    "native close page body Y equals calibration frame at 480x" + h);
+                check(notice.escape() && DialogGeometry.sentExit(notice) && !corner.escape(),
+                    "native close page Esc sends the close action at 480x" + h);
+                if (old.bodyY() != corner.bodyY() || old.maxScroll() != corner.maxScroll()) shifted++;
+            }
+            var reported = DialogGeometry.measure(component, font, bodyWidth, DialogGeometry.Mode.LIST_FOOTER, 480, 252);
+            check(shifted > 0 && reported.bodyY() == 33 && reported.maxScroll() == 12
+                && DialogGeometry.measure(component, font, bodyWidth, DialogGeometry.Mode.CORNER, 480, 252).bodyY() == 49,
+                "fault control: list exit footer reproduces the reported 16-unit shift at 480x252");
+            System.out.println("Footer geometry: notice matches calibration for 480x120..720; old list footer shifted at "
+                + shifted + " heights");
+        }
         var lines = font.split(component, bodyWidth);
         check(lines.size() == rowsExpected, path + " actual native row framing");
         boolean coordinates = path.getFileName().toString().equals("coordinates.json");
