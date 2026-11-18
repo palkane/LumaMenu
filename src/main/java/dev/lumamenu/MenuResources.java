@@ -11,6 +11,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 final class MenuResources {
+    /** Half-opaque white; the hit area's text color tints it, and menu visuals stay visible behind it. */
+    static final int DEBUG_ARGB = 0x8CFFFFFF;
     static void write(Path pack, boolean hideWarning) throws IOException {
         for (String shader : List.of("minecraft/shaders/core/item.vsh", "minecraft/shaders/core/entity.vsh",
                 "minecraft/shaders/core/glint.vsh",
@@ -39,6 +41,20 @@ final class MenuResources {
                     "chars", List.of(Character.toString(HitSurface.glyph(top, height)))));
         }
         json(pack, "assets/lumamenu/font/hit.json", Map.of("providers", providers));
+        // Debug overlay: visible glyphs at the hit glyphs' heights and ascents, plus a -1 step (see HitSurface).
+        List<Object> debugProviders = new ArrayList<>();
+        for (int height = 1; height <= 9; height++) {
+            String texture = "generated/hit_debug_" + height + ".png";
+            BufferedImage visible = new BufferedImage(1, height, BufferedImage.TYPE_INT_ARGB);
+            for (int y = 0; y < height; y++) visible.setRGB(0, y, DEBUG_ARGB);
+            png(pack, "assets/lumamenu/textures/" + texture, visible);
+            for (int top = 0; top <= 8; top++)
+                debugProviders.add(Map.of("type", "bitmap", "file", "lumamenu:" + texture,
+                    "height", height, "ascent", 1 - top,
+                    "chars", List.of(Character.toString(HitSurface.debugGlyph(top, height)))));
+        }
+        debugProviders.add(Map.of("type", "space", "advances", Map.of(HitSurface.DEBUG_BACK, -1)));
+        json(pack, "assets/lumamenu/font/hit_debug.json", Map.of("providers", debugProviders));
         BufferedImage cross = new BufferedImage(9, 9, BufferedImage.TYPE_INT_ARGB);
         for (int i = 1; i <= 7; i++) {
             cross.setRGB(i, i, 0xFFFFFFFF);

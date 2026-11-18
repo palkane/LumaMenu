@@ -9,7 +9,7 @@ commands:
   lumamenu:
     aliases: [luma]
     description: Open, calibrate or reload LumaMenu
-    usage: /lumamenu [open <page>|list|calibrate|close|mode [compatible|enhanced]|reload [file]|status|export]
+    usage: /lumamenu [open <page>|list|calibrate|close|mode [compatible|enhanced]|debug [on|off]|reload [file]|status|export]
 permissions:
   lumamenu.use:
     default: true

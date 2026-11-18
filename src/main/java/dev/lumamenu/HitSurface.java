@@ -12,6 +12,23 @@ import java.util.*;
 final class HitSurface {
     static final int ROWS = 20, ADVANCE = 454, BODY_WIDTH = 462;
     private static final Key FONT = Key.key("lumamenu", "hit");
+    /**
+     * Visible twin of the hit glyphs. A visible 1-pixel bitmap glyph advances 2 in 26.3, so each unit is drawn as a
+     * visible glyph plus a -1 step; the overlay carries no click/hover and is followed by a step back, leaving the
+     * transparent hit glyphs and their positions untouched.
+     */
+    static final Key DEBUG_FONT = Key.key("lumamenu", "hit_debug");
+    static final String DEBUG_BACK = Character.toString(0xF2FFF);
+    static int debugGlyph(int top, int height) { return glyph(top, height) - 0xF1000 + 0xF2000; }
+    private static Component overlay(int top, int height, int width, int control) {
+        String unit = Character.toString(debugGlyph(top, height)) + DEBUG_BACK;
+        return Component.text(unit.repeat(width)).font(DEBUG_FONT).color(debugColor(control))
+            .append(Component.text(move(-width)).font(SPACE));
+    }
+    private static final int[] DEBUG_COLORS = {0xFF4040, 0x40C0FF, 0x50E050, 0xFFC020, 0xD060FF, 0x20E0C0, 0xFF70B0, 0xA0A0FF};
+    static net.kyori.adventure.text.format.TextColor debugColor(int control) {
+        return net.kyori.adventure.text.format.TextColor.color(DEBUG_COLORS[Math.floorMod(control, DEBUG_COLORS.length)]);
+    }
     private static final Key SPACE = Key.key("lumamenu", "space");
     static final Key CHROME_FONT = Key.key("lumamenu", "chrome");
     static final String CROSS = "\uE000";
@@ -46,6 +63,10 @@ final class HitSurface {
      * Spacing inherits the root font and adjacent offsets share one node, keeping the Dialog NBT small. */
     static Component bind(List<Patch> patches, Map<Integer, ClickEvent> clicks, Map<Integer, String> tips,
                           Set<Integer> allowed, int rows, int advance, Chrome chrome, ClickEvent exit) {
+        return bind(patches, clicks, tips, allowed, rows, advance, chrome, exit, false);
+    }
+    static Component bind(List<Patch> patches, Map<Integer, ClickEvent> clicks, Map<Integer, String> tips,
+                          Set<Integer> allowed, int rows, int advance, Chrome chrome, ClickEvent exit, boolean debug) {
         List<List<Patch>> byRow = new ArrayList<>(rows);
         for (int row = 0; row < rows; row++) byRow.add(new ArrayList<>());
         for (Patch patch : patches)
@@ -56,6 +77,10 @@ final class HitSurface {
             for (Patch patch : byRow.get(row)) {
                 gap.append(patch.before);
                 flush(body, gap);
+                if (debug) {
+                    int code = patch.ink.codePointAt(0) - 0xF1000;
+                    body.append(overlay(code % 9, code / 9 + 1, patch.ink.codePointCount(0, patch.ink.length()), patch.control));
+                }
                 Component area = Component.text(patch.ink)
                     .font(FONT)
                     .clickEvent(clicks.get(patch.control));
@@ -95,11 +120,13 @@ final class HitSurface {
     }
     static Component space(int delta) { return Component.text(move(delta)).font(SPACE); }
 
-    static Component body(List<Hit> hits, ClickEvent exit) {
+    static Component body(List<Hit> hits, ClickEvent exit) { return body(hits, exit, false); }
+    static Component body(List<Hit> hits, ClickEvent exit, boolean debug) {
         var body = Component.text();
         for (int row = 0; row < ROWS; row++) {
             int y = row * 9;
-            for (Hit hit : hits) {
+            for (int index = 0; index < hits.size(); index++) {
+                Hit hit = hits.get(index);
                 var box = hit.box;
                 int top = Math.max(y, box.y()), bottom = Math.min(y + 9, box.y() + box.height());
                 if (bottom <= top) continue;
@@ -109,7 +136,9 @@ final class HitSurface {
                     .font(FONT).clickEvent(hit.click);
                 if (hit.tooltip != null && !hit.tooltip.isEmpty())
                     area = area.hoverEvent(HoverEvent.showText(Component.text(hit.tooltip)));
-                body.append(space(box.x())).append(area).append(space(-box.x() - width));
+                body.append(space(box.x()));
+                if (debug) body.append(overlay(top - y, bottom - top, width, index));
+                body.append(area).append(space(-box.x() - width));
             }
             if (row == 0 && exit != null) appendClose(body, CALIBRATION_CHROME, exit);
             body.append(space(ADVANCE));

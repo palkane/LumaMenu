@@ -162,6 +162,19 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 case "open" -> engine.demo(player, args.length > 1 ? args[1] : "demo");
                 case "calibrate", "align" -> engine.calibrate(player);
                 case "close" -> engine.close(player);
+                case "debug" -> {
+                    if (!player.hasPermission("lumamenu.admin")) throw new IllegalStateException("没有管理权限");
+                    if (args.length > 2) throw new IllegalArgumentException("/lumamenu debug [on|off]");
+                    boolean enabled = args.length == 2 ? switch (args[1].toLowerCase(Locale.ROOT)) {
+                        case "on" -> true;
+                        case "off" -> false;
+                        default -> throw new IllegalArgumentException("/lumamenu debug [on|off]");
+                    } : !engine.debug(player);
+                    engine.debug(player, enabled);
+                    player.sendMessage(enabled
+                        ? "LumaMenu：已显示点击区域（彩色半透明为实际可点位置，悬停看控件和坐标）；需要已接收含调试字体的新资源包。"
+                        : "LumaMenu：已关闭点击区域显示。");
+                }
                 case "mode" -> {
                     if (args.length > 2) throw new IllegalArgumentException("/lumamenu mode [compatible|enhanced]");
                     if (args.length == 2) {
@@ -177,7 +190,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                                 .clickEvent(ClickEvent.runCommand("/lumamenu mode enhanced"))));
                     }
                 }
-                default -> sender.sendMessage("/lumamenu [open <页面>|list|calibrate|close|mode|reload [文件]|status|export]");
+                default -> sender.sendMessage("/lumamenu [open <页面>|list|calibrate|close|mode|debug|reload [文件]|status|export]");
             }
         } catch (Exception error) {
             sender.sendMessage("LumaMenu：" + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()));
@@ -191,13 +204,15 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         if (engine == null) return List.of();
         if (args.length == 1) {
             List<String> values = new ArrayList<>(List.of("open", "list", "calibrate", "close", "mode"));
-            if (sender.hasPermission("lumamenu.admin")) values.addAll(List.of("reload", "status", "export"));
+            if (sender.hasPermission("lumamenu.admin")) values.addAll(List.of("debug", "reload", "status", "export"));
             return values.stream().filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("open"))
             return engine.pages().stream().filter(s -> s.startsWith(args[1])).sorted().toList();
         if (args.length == 2 && args[0].equalsIgnoreCase("reload") && sender.hasPermission("lumamenu.admin"))
             return engine.files().keySet().stream().filter(s -> s.startsWith(args[1])).sorted().toList();
+        if (args.length == 2 && args[0].equalsIgnoreCase("debug"))
+            return List.of("on", "off").stream().filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
         if (args.length == 2 && args[0].equalsIgnoreCase("mode"))
             return Arrays.stream(RenderMode.values()).map(RenderMode::key)
                 .filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
@@ -212,6 +227,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     }
     @EventHandler public void quit(PlayerQuitEvent event) {
         engine.close(event.getPlayer(), Reason.PLAYER_QUIT, false);
+        engine.forget(event.getPlayer().getUniqueId());
         look.forget(event.getPlayer().getUniqueId());
         ownDialogs.clear(event.getPlayer().getUniqueId());
     }

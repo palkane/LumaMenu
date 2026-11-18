@@ -1007,6 +1007,18 @@ public final class MenuChecks {
         check(host.messages.contains("h1") && !host.messages.contains("h2"), "the new control keeps its own window");
         click.accept(200, 120);
         check(host.commands.equals(List.of("balance")) && handle.active(), "command-in-place keeps the menu open");
+        String plainBody = GsonComponentSerializer.gson().serialize(host.body(client.id));
+        engine.debug(client.player, true);
+        String debugBody = GsonComponentSerializer.gson().serialize(host.body(client.id));
+        check(!plainBody.contains("lumamenu:hit_debug") && debugBody.contains("lumamenu:hit_debug")
+            && debugBody.contains("[调试] g · X ") && handle.active() && "a".equals(handle.page()),
+            "debug toggle re-presents the open page with the overlay and control tooltips");
+        int commandsBefore = host.commands.size();
+        click.accept(200, 120);
+        check(host.commands.size() == commandsBefore + 1 && handle.active(), "clicks still work with the debug overlay");
+        engine.debug(client.player, false);
+        check(!GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("lumamenu:hit_debug"),
+            "debug off restores the plain hit surface");
         click.accept(100, 155);
         check("b".equals(handle.page()) && host.messages.getLast().equals("open b") && !host.corners.getLast(),
             "navigation fires the target open event and honours page corner-close");
@@ -1554,6 +1566,24 @@ public final class MenuChecks {
         try (ZipFile archive = new ZipFile(zip.toFile())) {
             check(archive.getEntry("pack.mcmeta") != null && archive.getEntry("assets/lumamenu/items/target.json") != null
                 && archive.getEntry("assets/lumamenu/font/hit.json") != null, "export contains usable pack assets");
+            var hitFont = JsonParser.parseString(new String(archive.getInputStream(
+                archive.getEntry("assets/lumamenu/font/hit.json")).readAllBytes())).getAsJsonObject().getAsJsonArray("providers");
+            var debugFont = JsonParser.parseString(new String(archive.getInputStream(
+                archive.getEntry("assets/lumamenu/font/hit_debug.json")).readAllBytes())).getAsJsonObject().getAsJsonArray("providers");
+            check(hitFont.size() + 1 == debugFont.size()
+                && debugFont.get(hitFont.size()).getAsJsonObject().get("type").getAsString().equals("space"),
+                "debug font covers every hit glyph plus the step back");
+            for (int i = 0; i < hitFont.size(); i++) {
+                var a = hitFont.get(i).getAsJsonObject().deepCopy(); var b = debugFont.get(i).getAsJsonObject().deepCopy();
+                String debugTexture = b.remove("file").getAsString();
+                a.remove("file");
+                int hitCode = a.remove("chars").getAsJsonArray().get(0).getAsString().codePointAt(0);
+                int debugCode = b.remove("chars").getAsJsonArray().get(0).getAsString().codePointAt(0);
+                check(a.equals(b) && debugCode == hitCode + 0x1000, "debug glyph has identical height/ascent " + i);
+                var image = ImageIO.read(archive.getInputStream(archive.getEntry("assets/lumamenu/textures/"
+                    + debugTexture.substring("lumamenu:".length()))));
+                check(image.getRGB(0, image.getHeight() - 1) == MenuResources.DEBUG_ARGB, "debug texture is tintable and visible");
+            }
             check(archive.getEntry("assets/lumamenu/items/plane.json") != null
                 && archive.getEntry("assets/lumamenu/models/item/plane.json") != null,
                 "ItemDisplay flat visuals export the shared tinted plane model");
@@ -1624,6 +1654,7 @@ public final class MenuChecks {
             for (int code : component.content().codePoints().toArray()) {
                 if (code == '\n') { x = 0; y += 9; }
                 else if ("space".equals(styled.font())) x += code - 0xE000 - 1024;
+                else if ("hit_debug".equals(styled.font())) x += code == 0xF2FFF ? -1 : 2;
                 else if ("hit".equals(styled.font())) {
                     int top = (code - 0xF1000) % 9, height = (code - 0xF1000) / 9 + 1;
                     if (x == px && py >= y + top && py < y + top + height && component.clickEvent() != null)
@@ -1762,6 +1793,7 @@ public final class MenuChecks {
                                 List<HitSurface.Patch> surface, HitSurface.Chrome chrome,
                                 List<Layouts.Region> regions) throws Exception {
         JsonArray boxes = new JsonArray();
+        JsonObject json0 = new JsonObject();
         ActionTokens.Page actions = new ActionTokens.Page();
         List<ClickEvent> clicks = controls.stream().map(c -> actions.bind(() -> {})).toList();
         Map<Integer, ClickEvent> clickMap = new HashMap<>();
@@ -1788,7 +1820,10 @@ public final class MenuChecks {
             value.addProperty("id", "lumamenu:" + identifier(exit));
             boxes.add(value);
         }
-        JsonObject json = new JsonObject();
+        if (chrome != null || name.equals("calibration-close")) {
+            json0.addProperty("close", "lumamenu:" + identifier(exit));
+        }
+        JsonObject json = json0;
         Component body = name.equals("calibration-close")
             ? HitSurface.body(java.util.stream.IntStream.range(0, controls.size())
                 .mapToObj(i -> new HitSurface.Hit(controls.get(i).box(), clicks.get(i), "")).toList(), exit)
@@ -1806,6 +1841,14 @@ public final class MenuChecks {
         Path dir = Path.of("build/native-evidence/fixtures");
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(name + ".json"), new Gson().toJson(json));
+        // Debug twin: same callbacks must land on exactly the same native pixels with the tinted font.
+        Component debugBody = name.equals("calibration-close")
+            ? HitSurface.body(java.util.stream.IntStream.range(0, controls.size())
+                .mapToObj(i -> new HitSurface.Hit(controls.get(i).box(), clicks.get(i), "")).toList(), exit, true)
+            : HitSurface.bind(chrome == null ? surface : chrome.surface(), clickMap, Map.of(), clickMap.keySet(),
+                rows, advance, chrome, exit, true);
+        json.add("body", JsonParser.parseString(GsonComponentSerializer.gson().serialize(debugBody)));
+        Files.writeString(dir.resolve(name + "-debug.json"), new Gson().toJson(json));
     }
 
     private static final class Client {

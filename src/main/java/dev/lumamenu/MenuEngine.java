@@ -46,6 +46,8 @@ final class MenuEngine implements LumaMenuApi {
     private final Map<UUID, Session> sessions = new HashMap<>();
     private final Map<UUID, Stamp> stamps = new ConcurrentHashMap<>();
     private final ActionTokens tokens = new ActionTokens();
+    /** Players who see their real Dialog hit areas tinted; in memory only. */
+    private final Set<UUID> debug = new HashSet<>();
     private boolean closingAll;
 
     MenuEngine(Plugin plugin, Host host, DisplayRenderer displays, Calibration.Store calibration,
@@ -109,6 +111,20 @@ final class MenuEngine implements LumaMenuApi {
         return calibration.get(player.getUniqueId()) != null;
     }
     int activeCount() { host.requireMain(); return sessions.size(); }
+    boolean debug(Player player) { host.requireMain(); return debug.contains(player.getUniqueId()); }
+    /** Toggles the hit-area overlay and re-presents an open menu or calibration so it applies at once. */
+    void debug(Player player, boolean enabled) {
+        host.requireMain();
+        if (enabled) debug.add(player.getUniqueId()); else debug.remove(player.getUniqueId());
+        Session session = sessions.get(player.getUniqueId());
+        if (session == null) return;
+        if (!session.active()) { close(player, invalidReason(session), true); return; }
+        try {
+            if (session.attempt != null) presentCalibration(session);
+            else present(session, false);
+        } catch (RuntimeException error) { close(player, Reason.ERROR, true); throw error; }
+    }
+    void forget(UUID player) { debug.remove(player); }
     int profileCount() { host.requireMain(); return compiled.profiles().size(); }
     int rotationHitStep() { host.requireMain(); return compiled.rotationHitStep(); }
     Stamp stamp(UUID player) { return stamps.get(player); }
@@ -228,7 +244,14 @@ final class MenuEngine implements LumaMenuApi {
             Layouts.Control control = page.controls().get(i);
             if (!permitted(session.player, control.permission())) continue;
             allowed.add(i);
-            tips.put(i, DisplayRenderer.expand(control.tooltip(), values));
+            String tip = DisplayRenderer.expand(control.tooltip(), values);
+            if (debug.contains(session.player.getUniqueId())) {
+                var box = control.box();
+                tip = "[调试] " + control.id() + " · X " + box.x() + ".." + (box.x() + box.width() - 1)
+                    + " / Y " + box.y() + ".." + (box.y() + box.height() - 1)
+                    + (control.clickable() && control.acts() ? "" : " · 不可点") + (tip.isEmpty() ? "" : "\n" + tip);
+            }
+            tips.put(i, tip);
             if (!control.clickable() || !control.acts()) continue;
             clicks.put(i, actions.bind(() -> {
                 session.check();
@@ -250,7 +273,8 @@ final class MenuEngine implements LumaMenuApi {
         var hit = compiled.hit(calibration.get(session.player.getUniqueId()), page.id(), session.mode, session.down);
         host.show(session.player, HitSurface.bind(corner ? hit.chrome().surface() : hit.surface(),
             clicks, tips, allowed, page.surfaceRows(), page.surfaceAdvance(),
-            corner ? hit.chrome() : null, exit), exit, page.bodyWidth(), corner);
+            corner ? hit.chrome() : null, exit, debug.contains(session.player.getUniqueId())),
+            exit, page.bodyWidth(), corner);
     }
 
     /**
@@ -350,7 +374,8 @@ final class MenuEngine implements LumaMenuApi {
         ClickEvent exit = actions.bind(session::close);
         tokens.publish(session.player.getUniqueId(), actions);
         stamps.put(session.player.getUniqueId(), new Stamp(session.id, actions.nonce));
-        host.show(session.player, HitSurface.body(hits, host.cornerClose() ? exit : null), exit, HitSurface.BODY_WIDTH,
+        host.show(session.player, HitSurface.body(hits, host.cornerClose() ? exit : null,
+                debug.contains(session.player.getUniqueId())), exit, HitSurface.BODY_WIDTH,
             host.cornerClose());
     }
 

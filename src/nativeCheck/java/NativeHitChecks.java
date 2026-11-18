@@ -63,6 +63,9 @@ public final class NativeHitChecks {
             for (int code : provider.getSupportedGlyphs()) {
                 var glyph = provider.getGlyph(code);
                 if (name.equals("hit") && !mutant) check(glyph.info().getAdvance() == 1, "one-unit transparent glyph advance");
+                if (name.equals("hit_debug") && code != 0xF2FFF)
+                    check(glyph.info().getAdvance() == 2, "visible debug glyph advance is width+1 in 26.3");
+                if (name.equals("hit_debug") && code == 0xF2FFF) check(glyph.info().getAdvance() == -1, "debug step back");
                 glyphs.put(code, bake(glyph));
             }
         }
@@ -127,13 +130,19 @@ public final class NativeHitChecks {
                 "fault control: restoring excess rows reproduces native wheel movement");
         }
         List<ActiveArea> areas = new ArrayList<>();
+        List<TextRenderable.Styled> overlay = new ArrayList<>();
+        boolean debug = path.getFileName().toString().endsWith("-debug.json");
         List<Font.PreparedText> prepared = new ArrayList<>();
         for (int row = 0; row < lines.size(); row++) {
             check(font.width(lines.get(row)) == advance, path + " no actual font wrapping");
             var text = font.prepareText(lines.get(row), 0, row * 9, -1, false, false, 0);
             prepared.add(text);
             text.visit(new Font.GlyphVisitor() {
-                public void acceptGlyph(TextRenderable.Styled glyph) { if (action(glyph.style()) != null) areas.add(glyph); }
+                public void acceptGlyph(TextRenderable.Styled glyph) {
+                    if (action(glyph.style()) != null) areas.add(glyph);
+                    else if (glyph.style().getFont() instanceof FontDescription.Resource r
+                        && r.id().toString().equals("lumamenu:hit_debug")) overlay.add(glyph);
+                }
                 public void acceptEmptyArea(EmptyArea area) { if (action(area.style()) != null) areas.add(area); }
             });
         }
@@ -156,6 +165,22 @@ public final class NativeHitChecks {
             for (int y = top; y < top + box.get("height").getAsInt(); y++)
                 for (int x = left; x < left + box.get("width").getAsInt(); x++)
                     expected[y][x] = box.get("id").getAsString();
+        }
+        if (debug) {
+            // The tinted overlay must paint exactly the pixels that carry a menu callback (not the corner "×").
+            boolean[][] painted = new boolean[height][width];
+            for (var glyph : overlay)
+                for (int y = Math.max(0, (int) Math.floor(glyph.top()) - 6); y < Math.min(height, (int) Math.ceil(glyph.bottom()) - 6); y++)
+                    for (int x = Math.max(0, (int) Math.floor(glyph.left())); x < Math.min(width, (int) Math.ceil(glyph.right())); x++)
+                        if (x + .5f > glyph.left() && x + .5f < glyph.right() && y + 6.5f > glyph.top() && y + 6.5f < glyph.bottom())
+                            painted[y][x] = true;
+            String close = json.has("close") ? json.get("close").getAsString() : null;
+            for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+                boolean menu = expected[y][x] != null && !expected[y][x].equals(close);
+                if (painted[y][x] != menu) throw new AssertionError(path + " debug overlay mismatch at " + x + "," + y);
+            }
+            check(!overlay.isEmpty() || Arrays.stream(expected).flatMap(Arrays::stream).allMatch(Objects::isNull),
+                path + " debug overlay drawn");
         }
         for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
             if (!Objects.equals(actual[y][x], expected[y][x]))
@@ -216,6 +241,7 @@ public final class NativeHitChecks {
         try {
             load(pack, "space", false);
             load(pack, "hit", false);
+            load(pack, "hit_debug", false);
             load(pack, "chrome", false);
             models(pack);
             NativePlaneChecks.run(root);
