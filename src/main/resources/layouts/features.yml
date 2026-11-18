@@ -1,0 +1,88 @@
+schema-version: 3
+id: features
+events:
+  open: 'sound: UI_BUTTON_CLICK-0.5-1'
+  close: 'tell: 已关闭功能演示'
+pages:
+  features:
+    title: 功能演示
+    frontend:
+      bg: {type: rectangle, width: 452, height: 180, color: '#1E2430', offset: {x: 226, y: 90}}
+      title: {type: text, content: '&l&e功能演示&r &7· 文字、手势、事件', offset: {x: 226, y: 10, z: 1}}
+      legacy:
+        type: text
+        content: '&c红色 &a绿色 &9&n下划线&r &m删除线&r &o斜体&r &#FF8800十六进制色'
+        offset: {x: 226, y: 26, z: 1}
+      left-frame: {type: frame, width: 134, height: 44, color: '#4A5568', offset: {x: 76, y: 62}}
+      left:
+        type: text
+        content: '左对齐：The quick brown fox jumps over the lazy dog，中文与 English 混排自动换行。'
+        line-width: 130
+        max-lines: 4
+        alignment: left
+        offset: {x: 76, y: 62, z: 1}
+      center-frame: {type: frame, width: 134, height: 44, color: '#4A5568', offset: {x: 226, y: 62}}
+      center:
+        type: text
+        content: '居中：同一段文字在固定宽度的框里换行，超过 max-lines 的动态内容会以省略号截断。'
+        line-width: 130
+        max-lines: 4
+        alignment: center
+        offset: {x: 226, y: 62, z: 1}
+      right-frame: {type: frame, width: 134, height: 44, color: '#4A5568', offset: {x: 376, y: 62}}
+      right:
+        type: text
+        content: '&l右对齐粗体&r：每一行都被填充到同样宽度，所以位置和点击范围固定不变。'
+        line-width: 130
+        max-lines: 4
+        alignment: right
+        offset: {x: 376, y: 62, z: 1}
+      faint: {type: text, content: '半透明文字 opacity 128', opacity: 128, offset: {x: 226, y: 98, z: 1}}
+      gesture:
+        type: button
+        style: vanilla
+        content: 单击/双击
+        width: 120
+        height: 22
+        offset: {x: 86, y: 126, z: 1}
+        tooltip: 300毫秒内再次点击为双击
+        actions:
+          single: ['tell: 单击', 'sound: UI_BUTTON_CLICK-0.5-1']
+          double: ['tell: 双击', 'sound: ENTITY_EXPERIENCE_ORB_PICKUP-0.5-1']
+      inplace:
+        type: button
+        style: vanilla
+        content: 原位执行命令
+        width: 120
+        height: 22
+        offset: {x: 226, y: 126, z: 1}
+        tooltip: command-in-place：菜单保持打开
+        actions: 'command-in-place: lumamenu mode'
+      next:
+        type: button
+        style: vanilla
+        content: 原生关闭页 →
+        width: 120
+        height: 22
+        offset: {x: 366, y: 126, z: 1}
+        actions: 'open: features-native'
+      status: {type: text, content: '{status}', color: '#A0AEC0', offset: {x: 226, y: 160, z: 1}}
+  features-native:
+    title: 原生关闭
+    corner-close: false
+    frontend:
+      bg: {type: rectangle, width: 452, height: 180, color: '#1E2430', offset: {x: 226, y: 90}}
+      note:
+        type: text
+        content: '本页设置 corner-close: false：使用底部原生“关闭”按钮，可按 Esc 关闭。'
+        line-width: 300
+        max-lines: 2
+        offset: {x: 226, y: 60, z: 1}
+      back:
+        type: button
+        style: vanilla
+        content: ← 返回
+        width: 120
+        height: 22
+        offset: {x: 226, y: 110, z: 1}
+        actions: back

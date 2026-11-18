@@ -1,0 +1,16 @@
+LumaMenu
+Copyright (c) 2026 palkane and contributors
+
+Calibration, transparent Dialog hit geometry and action-token handling are
+adapted from DialogMenu and its entity-hit prototype, by palkane and
+DialogMenu contributors. Those files have been modified for this independent
+entity-rendered engine. The original Apache-2.0 license and Commons Clause
+condition are retained in LICENSE.
+
+src/main/resources/font-widths.bin.gz lists only the glyph advances of the
+Minecraft 26.3 default font (Mojang bitmaps and GNU Unifont), measured through
+the client's own glyph providers; it contains no glyph images.
+
+The core shader files under src/main/resources/resourcepack/assets/minecraft/
+are modified copies of Minecraft 26.3 shaders. Minecraft is a trademark of
+Mojang AB; this project is not affiliated with Mojang or Microsoft.

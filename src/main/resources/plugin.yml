@@ -1,0 +1,17 @@
+name: LumaMenu
+version: '${version}'
+main: dev.lumamenu.LumaMenuPlugin
+api-version: '26.3'
+description: Private display-entity menus with transparent Dialog input
+authors: [palkane]
+depend: [packetevents]
+commands:
+  lumamenu:
+    aliases: [luma]
+    description: Open, calibrate or reload LumaMenu
+    usage: /lumamenu [open <page>|list|calibrate|close|mode [compatible|enhanced]|reload [file]|status|export]
+permissions:
+  lumamenu.use:
+    default: true
+  lumamenu.admin:
+    default: op

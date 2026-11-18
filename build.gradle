@@ -1,0 +1,76 @@
+plugins {
+    id 'java'
+}
+
+group = 'dev.lumamenu'
+version = providers.gradleProperty('version').get()
+
+def platformClasspath = System.getenv('LUMAMENU_LOCAL_CLASSPATH')
+def packetEvents = System.getenv('LUMAMENU_PACKETEVENTS_JAR')
+if (!platformClasspath || !packetEvents) {
+    throw new GradleException('Set LUMAMENU_LOCAL_CLASSPATH (Paper/Leaf 26.3 API and dependencies) and LUMAMENU_PACKETEVENTS_JAR (2.14.0).')
+}
+dependencies {
+    compileOnly files(platformClasspath.split(File.pathSeparator))
+    compileOnly files(packetEvents)
+    testImplementation files(configurations.compileClasspath)
+}
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(25)
+}
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = 'UTF-8'
+}
+processResources {
+    inputs.property('version', project.version)
+    filesMatching('plugin.yml') { expand(version: project.version) }
+}
+jar {
+    from(['LICENSE', 'NOTICE']) { into 'META-INF' }
+}
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+tasks.register('menuChecks', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.lumamenu.MenuChecks'
+    systemProperty 'java.awt.headless', 'true'
+}
+check.dependsOn menuChecks
+test.failOnNoDiscoveredTests = false
+
+sourceSets {
+    nativeCheck
+}
+def clientClasspath = System.getenv('LUMAMENU_CLIENT_CLASSPATH')
+dependencies {
+    if (clientClasspath) nativeCheckImplementation files(clientClasspath.split(File.pathSeparator))
+}
+tasks.register('nativeHitChecks', JavaExec) {
+    dependsOn menuChecks, nativeCheckClasses
+    classpath = sourceSets.nativeCheck.runtimeClasspath
+    mainClass = 'NativeHitChecks'
+    args layout.buildDirectory.dir('native-evidence').get().asFile.absolutePath
+    systemProperty 'java.awt.headless', 'true'
+    systemProperty 'lumamenu.client', System.getenv('LUMAMENU_CLIENT_JAR') ?: ''
+    systemProperty 'lumamenu.assets', System.getenv('LUMAMENU_ASSETS_INDEX') ?: ''
+}
+tasks.named('compileNativeCheckJava') {
+    doFirst {
+        if (!clientClasspath) throw new GradleException('Set LUMAMENU_CLIENT_CLASSPATH to the actual 26.3 client and libraries.')
+    }
+}
+tasks.register('fontWidths', JavaExec) {
+    dependsOn nativeCheckClasses
+    classpath = sourceSets.nativeCheck.runtimeClasspath
+    mainClass = 'FontWidths'
+    doFirst {
+        if (!System.getenv('LUMAMENU_CLIENT_JAR') || !System.getenv('LUMAMENU_ASSETS_INDEX'))
+            throw new GradleException('Set LUMAMENU_CLIENT_JAR (26.3 client jar) and LUMAMENU_ASSETS_INDEX (26.3 asset index JSON with its objects directory).')
+    }
+    args System.getenv('LUMAMENU_CLIENT_JAR') ?: '', System.getenv('LUMAMENU_ASSETS_INDEX') ?: '',
+        file('src/main/resources/font-widths.bin.gz').absolutePath
+}
