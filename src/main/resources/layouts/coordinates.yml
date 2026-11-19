@@ -6,14 +6,14 @@ canvas: {width: 452, height: 180}
 frontend:
   panel:
     type: group
-    offset: {x: 226, y: 80, z: -1}
+    offset: {x: 226, y: 70.5, z: -1}
     children:
-      outline: {type: frame, width: 480, height: 220, color: '#000000'}
-      fill: {type: rectangle, width: 478, height: 218, color: '#C6C6C6', offset: {z: 0.01}}
-      light-top: {type: rectangle, width: 476, height: 2, color: '#FFFFFF', offset: {x: -1, y: -108, z: 0.02}}
-      light-left: {type: rectangle, width: 2, height: 216, color: '#FFFFFF', offset: {x: -238, y: -1, z: 0.02}}
-      shade-right: {type: rectangle, width: 2, height: 216, color: '#555555', offset: {x: 238, y: 1, z: 0.02}}
-      shade-bottom: {type: rectangle, width: 476, height: 2, color: '#555555', offset: {x: 1, y: 108, z: 0.02}}
+      outline: {type: frame, width: 468, height: 237, color: '#000000'}
+      fill: {type: rectangle, width: 466, height: 235, color: '#C6C6C6', offset: {z: 0.01}}
+      light-top: {type: rectangle, width: 464, height: 2, color: '#FFFFFF', offset: {x: -1, y: -116.5, z: 0.02}}
+      light-left: {type: rectangle, width: 2, height: 233, color: '#FFFFFF', offset: {x: -232, y: -1, z: 0.02}}
+      shade-right: {type: rectangle, width: 2, height: 233, color: '#555555', offset: {x: 232, y: 1, z: 0.02}}
+      shade-bottom: {type: rectangle, width: 464, height: 2, color: '#555555', offset: {x: 1, y: 116.5, z: 0.02}}
   ruler:
     type: grid
     width: 460
@@ -32,12 +32,13 @@ frontend:
     type: text
     content: 十字坐标 · 每格10点击单位
     width: 330
+    size: 10
     color: '#404040'
-    offset: {x: 226, y: -20, z: 2}
+    offset: {x: 226, y: -31, z: 2}
   result:
     type: text
     content: '{probe}'
     width: 440
     size: 7
     color: '#404040'
-    offset: {x: 226, y: -8, z: 2}
+    offset: {x: 226, y: -13, z: 2}

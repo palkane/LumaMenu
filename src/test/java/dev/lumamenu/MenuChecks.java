@@ -122,7 +122,7 @@ public final class MenuChecks {
                 && r.box().y() >= 0 && r.box().y() + r.box().height() <= 10),
             "partly visible button clips to canvas; fully outside button has no hit region");
         fixture(overflow);
-        check(demo.controls().stream().anyMatch(c -> c.id().equals("ping") && c.box().width() == 98
+        check(demo.controls().stream().anyMatch(c -> c.id().equals("ping") && c.box().width() == 140
             && c.actions().equals(List.of("sound: UI_BUTTON_CLICK-0.5-1", "callback: ping"))),
             "familiar all/left order and full button rectangle");
         for (int schema : List.of(1, 2, 3)) {
@@ -438,16 +438,16 @@ public final class MenuChecks {
         check(host.begins == 1 && host.ends == 0, "camera begins before initial presentation");
         check(handle.active() && renderer.active(client.id), "open uses restored cache even when source YAML is broken");
         int hide = host.hides;
-        String stale = clickAt(host.body(client.id), 157, 79);
+        String stale = clickAt(host.body(client.id), 226, 94);
         engine.click(client.player, stale);
         check(handle.page().equals("detail") && closed.isEmpty() && host.hides == hide, "open action changes page without closing session");
         UUID identity = handle.id();
         engine.click(client.player, stale);
         check(handle.page().equals("detail"), "old page token cannot navigate current page");
-        engine.click(client.player, clickAt(host.body(client.id), 55, 127));
+        engine.click(client.player, clickAt(host.body(client.id), 113, 150));
         check(handle.page().equals("demo") && handle.id().equals(identity) && closed.isEmpty(), "back preserves handle identity");
         check(host.begins == 1 && host.ends == 0, "page navigation does not restart spectator camera");
-        String ping = clickAt(host.body(client.id), 55, 79);
+        String ping = clickAt(host.body(client.id), 76, 94);
         engine.click(second.player, ping);
         check(callbacks.isEmpty(), "another UUID cannot consume action");
         engine.click(client.player, ping);
@@ -492,7 +492,7 @@ public final class MenuChecks {
         damageListener.callEvent(damage);
         check(damaged.active() && renderer.active(client.id), "cancelled attacks leave the menu open");
         damage.setCancelled(false);
-        String damagedToken = clickAt(host.body(client.id), 55, 79);
+        String damagedToken = clickAt(host.body(client.id), 76, 94);
         int damageHides = host.hides, damageEnds = host.ends, damageClosed = closed.size();
         damageListener.callEvent(damage);
         check(!damaged.active() && !renderer.active(client.id) && engine.stamp(client.id) == null
@@ -628,7 +628,7 @@ public final class MenuChecks {
         engine.demo(client.player, "demo");
         UUID session = engine.stamp(client.id).session();
         int hides = host.hides;
-        engine.click(client.player, clickAt(host.body(client.id), 55, 103));
+        engine.click(client.player, clickAt(host.body(client.id), 376, 94));
         check(engine.stamp(client.id).session().equals(session) && host.hides == hides,
             "coordinate menu opens from demo in the existing Dialog session");
         var page = pages.get("coordinates");
@@ -833,7 +833,7 @@ public final class MenuChecks {
         check(scale.stream().anyMatch(s -> s.getX() < 0) && scale.stream().anyMatch(s -> s.getX() > 0),
             "coexisting players receive distinct enhanced and compatible transform metadata");
         byte[] cached = Files.readAllBytes(dir.resolve("compiled.json.gz"));
-        String stale = clickAt(host.body(first.id), 55, 79);
+        String stale = clickAt(host.body(first.id), 76, 94);
         engine.mode(first.player, RenderMode.COMPATIBLE);
         check(one.active() && two.active() && one.page().equals("demo")
             && engine.mode(first.player) == RenderMode.COMPATIBLE, "switch preserves both active handles and page");
@@ -841,7 +841,7 @@ public final class MenuChecks {
             "switch does not restart spectator or alter other player");
         engine.click(first.player, stale);
         check(callbacks.isEmpty(), "switch invalidates previous mode action tokens");
-        engine.click(first.player, clickAt(host.body(first.id), 55, 79));
+        engine.click(first.player, clickAt(host.body(first.id), 76, 94));
         check(callbacks.size() == 1, "switch publishes working action tokens for same page");
         for (RenderMode mode : RenderMode.values()) {
             engine.mode(first.player, mode);
