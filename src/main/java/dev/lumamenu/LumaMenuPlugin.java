@@ -48,6 +48,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     private PacketListenerAbstract riderGuard;
     private Path layouts;
     private ClientInventory inventory;
+    private DisplayRenderer renderer;
     private final OwnDialogs ownDialogs = new OwnDialogs();
     private Settings settings;
 
@@ -82,13 +83,13 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 cache.save(state);
                 getLogger().info("Compiled and saved " + state.pages().size() + " initial pages.");
             }
-            Path pack = MenuResources.export(data.resolve("resourcepack"), settings.hideWarning());
-            DisplayRenderer renderer = new DisplayRenderer((player, packet) ->
+            renderer = new DisplayRenderer((player, packet) ->
                 PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
             inventory = new ClientInventory((player, packet) ->
                 PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
             engine = new MenuEngine(this, new Platform(), renderer, calibration, cache, state,
                 new RenderPreferences(data.resolve("render-modes.properties")));
+            Path pack = exportPack();
             Bukkit.getPluginManager().registerEvents(this, this);
             Objects.requireNonNull(getCommand("lumamenu")).setExecutor(this);
             Objects.requireNonNull(getCommand("lumamenu")).setTabCompleter(this);
@@ -102,6 +103,14 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             getLogger().log(Level.SEVERE, "LumaMenu startup failed; existing files retained", error);
             Bukkit.getPluginManager().disablePlugin(this);
         }
+    }
+
+    /** Rescans {@code images/}, hands the catalog to the renderer and re-exports the pack with every used image. */
+    private Path exportPack() throws java.io.IOException {
+        ImageCatalog images = ImageCatalog.scan(Layouts.images(layouts));
+        renderer.images(images);
+        return MenuResources.export(getDataFolder().toPath().resolve("resourcepack"), settings.hideWarning(),
+            images, engine.imageModels());
     }
 
     @Override public void onDisable() {
@@ -125,6 +134,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                         if (args.length == 2) {
                             String file = args[1].replaceFirst("\\.yml$", "");
                             engine.reloadFile(layouts, file);
+                            exportPack();
                             sender.sendMessage("LumaMenu：已重读 " + file + ".yml，共 " + engine.pages().size()
                                 + " 页，其他布局沿用已编译版本，" + (System.nanoTime() - start) / 1_000_000 + "ms");
                             return true;
@@ -134,8 +144,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                         Settings next = readSettings(candidate);
                         engine.reload(layouts, next.rotationHitStep());
                         settings = next;
-                        MenuResources.export(getDataFolder().toPath().resolve("resourcepack"),
-                            settings.hideWarning());
+                        exportPack();
                         sender.sendMessage("LumaMenu：已编译并保存 " + engine.pages().size() + " 页 / "
                             + engine.profileCount() + " 个校准映射，rotation-hit-step=" + engine.rotationHitStep()
                             + "，" + (System.nanoTime() - start) / 1_000_000 + "ms");
@@ -144,8 +153,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                         + " pages=" + engine.pages().size() + " profiles=" + engine.profileCount()
                         + " sessions=" + engine.activeCount() + " rotation-hit-step=" + engine.rotationHitStep()
                         + " compiled-cache=ready");
-                    case "export" -> sender.sendMessage("已导出：" + MenuResources.export(getDataFolder().toPath().resolve("resourcepack"),
-                        settings.hideWarning())
+                    case "export" -> sender.sendMessage("已导出：" + exportPack()
                         + "；资源变更后请重新合并并发布服务器资源包。");
                 }
                 return true;

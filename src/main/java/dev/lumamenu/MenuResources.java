@@ -14,6 +14,11 @@ final class MenuResources {
     /** Half-opaque white; the hit area's text color tints it, and menu visuals stay visible behind it. */
     static final int DEBUG_ARGB = 0x8CFFFFFF;
     static void write(Path pack, boolean hideWarning) throws IOException {
+        write(pack, hideWarning, ImageCatalog.EMPTY, List.of());
+    }
+    /** {@code usedModels}: item models the compiled pages reference, so vanilla image models are only written when used. */
+    static void write(Path pack, boolean hideWarning, ImageCatalog images, Collection<String> usedModels) throws IOException {
+        images.write(pack, usedModels);
         for (String shader : List.of("minecraft/shaders/core/item.vsh", "minecraft/shaders/core/entity.vsh",
                 "minecraft/shaders/core/glint.vsh",
                 "minecraft/shaders/core/text.vsh", "minecraft/shaders/core/position_color.vsh",
@@ -118,12 +123,16 @@ final class MenuResources {
     }
 
     static Path export(Path directory, boolean hideWarning) throws IOException {
+        return export(directory, hideWarning, ImageCatalog.EMPTY, List.of());
+    }
+    static Path export(Path directory, boolean hideWarning, ImageCatalog images, Collection<String> usedModels)
+            throws IOException {
         Files.createDirectories(directory);
         Path staging = Files.createTempDirectory(directory, "pack-");
         Path temp = Files.createTempFile(directory, "pack-", ".tmp");
         Path result = directory.resolve("lumamenu-26.3.zip");
         try {
-            write(staging, hideWarning);
+            write(staging, hideWarning, images, usedModels);
             try (var zip = new ZipOutputStream(Files.newOutputStream(temp)); var paths = Files.walk(staging)) {
                 for (Path path : paths.filter(Files::isRegularFile).sorted().toList()) {
                     ZipEntry entry = new ZipEntry(staging.relativize(path).toString().replace('\\', '/'));

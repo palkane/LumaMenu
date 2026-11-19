@@ -22,7 +22,7 @@ final class Layouts {
     private static final Set<String> NODE = Set.of("type", "offset", "scale", "visible", "children",
         "width", "height", "size", "thickness", "color", "content", "source", "item-model",
         "rotation", "stretch", "bounds", "actions", "tooltip", "permission", "clickable", "style", "step",
-        "alignment", "line-width", "max-lines", "opacity");
+        "alignment", "line-width", "max-lines", "opacity", "tintable", "reuse-texture", "atlas");
     static final Set<String> KINDS = Set.of("text", "plane", "item", "block");
 
     record Visual(String id, String kind, double x, double y, double z,
@@ -140,11 +140,17 @@ final class Layouts {
         boolean cornerClose(boolean fallback) { return cornerClose == null ? fallback : cornerClose; }
     }
 
+    /** Images live next to the layouts folder: {@code plugins/LumaMenu/images/}. */
+    static Path images(Path layouts) { return layouts.toAbsolutePath().resolveSibling("images"); }
+
     static Map<String, Page> load(Path directory) throws IOException, InvalidConfigurationException {
+        return load(directory, ImageCatalog.scan(images(directory)));
+    }
+    static Map<String, Page> load(Path directory, ImageCatalog catalog) throws IOException, InvalidConfigurationException {
         Map<String, Page> pages = new LinkedHashMap<>();
         try (var files = Files.list(directory)) {
             for (Path path : files.filter(p -> p.toString().endsWith(".yml")).sorted().toList())
-                file(path).forEach((id, page) -> {
+                file(path, catalog).forEach((id, page) -> {
                     if (pages.putIfAbsent(id, page) != null) throw new IllegalArgumentException("重复页面ID：" + id);
                 });
         }
@@ -155,10 +161,13 @@ final class Layouts {
 
     /** Pages of one layout file, each tagged with that file's ID. */
     static Map<String, Page> file(Path path) throws IOException, InvalidConfigurationException {
+        return file(path, ImageCatalog.scan(images(path.toAbsolutePath().getParent())));
+    }
+    static Map<String, Page> file(Path path, ImageCatalog catalog) throws IOException, InvalidConfigurationException {
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.load(path.toFile());
         String expected = path.getFileName().toString().replaceFirst("\\.yml$", "");
-        try { return parse(expected, yaml); }
+        try { return parse(expected, yaml, catalog); }
         catch (IllegalArgumentException error) {
             throw new IllegalArgumentException(path.getFileName() + "：" + error.getMessage(), error);
         }
@@ -179,6 +188,9 @@ final class Layouts {
     }
 
     static Map<String, Page> parse(String expected, ConfigurationSection root) {
+        return parse(expected, root, ImageCatalog.EMPTY);
+    }
+    static Map<String, Page> parse(String expected, ConfigurationSection root, ImageCatalog catalog) {
         keys(root, ROOT);
         String id = root.getString("id", expected);
         checkId(id);
@@ -186,21 +198,22 @@ final class Layouts {
         int schema = integer(root, "schema-version", 1, 1, 3);
         Map<String, Page> result = new LinkedHashMap<>();
         ConfigurationSection family = section(root, "pages", false);
-        if (family == null) result.put(id, page(id, root, root, schema, id));
+        if (family == null) result.put(id, page(id, root, root, schema, id, catalog));
         else {
             if (root.contains("frontend")) throw new IllegalArgumentException("pages与顶层frontend不能混用");
             for (String pageId : family.getKeys(false)) {
                 checkId(pageId);
                 ConfigurationSection source = section(family, pageId, true);
                 keys(source, PAGE);
-                result.put(pageId, page(pageId, source, root, schema, id));
+                result.put(pageId, page(pageId, source, root, schema, id, catalog));
             }
             if (result.isEmpty()) throw new IllegalArgumentException("pages不能为空");
         }
         return result;
     }
 
-    private static Page page(String id, ConfigurationSection source, ConfigurationSection root, int schema, String file) {
+    private static Page page(String id, ConfigurationSection source, ConfigurationSection root, int schema, String file,
+                             ImageCatalog catalog) {
         ConfigurationSection canvas = section(source, "canvas", false);
         if (canvas == null) canvas = section(root, "canvas", false);
         if (canvas != null) keys(canvas, Set.of("width", "height"));
@@ -215,7 +228,7 @@ final class Layouts {
         ConfigurationSection frontend = section(source, "frontend", true);
         List<Visual> visuals = new ArrayList<>();
         List<Control> controls = new ArrayList<>();
-        nodes(frontend, "", 0, 0, 0, 1, schema, width, height, visuals, controls, false);
+        nodes(frontend, "", 0, 0, 0, 1, schema, width, height, visuals, controls, false, catalog);
         visuals.sort(Comparator.comparingDouble(Visual::z));
         controls.sort(Comparator.comparingDouble(Control::z));
         String title = source.getString("title", root.getString("title", id));
@@ -248,7 +261,8 @@ final class Layouts {
 
     private static void nodes(ConfigurationSection parent, String path, double px, double py,
                               double pz, double ps, int schema, double cw, double ch,
-                              List<Visual> visuals, List<Control> controls, boolean inheritedTransform) {
+                              List<Visual> visuals, List<Control> controls, boolean inheritedTransform,
+                              ImageCatalog catalog) {
         for (String name : parent.getKeys(false)) {
             checkId(name);
             String id = path + name;
@@ -284,7 +298,7 @@ final class Layouts {
                 if (node.contains("actions") || node.contains("tooltip"))
                     throw new IllegalArgumentException(id + "：group不提供点击区域");
                 nodes(section(node, "children", true), id + "/", x, y, z, scale, schema,
-                    cw, ch, visuals, controls, spatial);
+                    cw, ch, visuals, controls, spatial, catalog);
                 transform(visuals, controls, visualStart, controlStart, transform);
                 continue;
             }
@@ -354,6 +368,21 @@ final class Layouts {
                 default -> 16;
             };
             double height = number(node, "height", defaultHeight, .01, 2048) * scale;
+            if (!type.equals("image") && (node.contains("tintable") || node.contains("atlas") || node.contains("reuse-texture")))
+                throw new IllegalArgumentException(id + "：tintable/atlas/reuse-texture仅用于image");
+            String imageSource = "", imageModel = "";
+            if (type.equals("image")) {
+                if (node.contains("atlas")) throw new IllegalArgumentException(id + "：图片atlas裁切暂不支持");
+                imageSource = required(node, "source");
+                if (!ImageCatalog.dynamic(imageSource)) {
+                    // width/height is a box; the image keeps its own aspect inside it, as in DialogMenu.
+                    var image = catalog.resolve(imageSource);
+                    if (width / height > image.aspect()) width = height * image.aspect();
+                    else height = width / image.aspect();
+                    imageModel = image.model();
+                    imageSource = "";
+                }
+            }
             String style = node.getString("style", "flat");
             if (node.contains("style") && !type.equals("button"))
                 throw new IllegalArgumentException(id + "：style仅用于button");
@@ -375,6 +404,9 @@ final class Layouts {
             switch (type) {
                 case "rectangle", "line" -> visuals.add(visual(id, "plane", x, y, z, width, height, size,
                     color, "", "", "", 0, 0, 0, 1, 1, 1));
+                // Untinted unless asked: the item model's tint default is white, which leaves the pixels as drawn.
+                case "image" -> visuals.add(visual(id, "plane", x, y, z, width, height, size,
+                    bool(node, "tintable", false) ? color : 0xFFFFFF, "", imageSource, imageModel, 0, 0, 0, 1, 1, 1));
                 case "frame" -> {
                     double t = number(node, "thickness", 1, .01, 100) * scale;
                     if (t * 2 >= Math.min(width, height)) throw new IllegalArgumentException(id + "：边框过厚");
@@ -423,7 +455,7 @@ final class Layouts {
             List<String> actions = gestures.first();
             String tooltip = text(node.get("tooltip"));
             if (!actions.isEmpty() || !gestures.doubled().isEmpty() || !tooltip.isEmpty()) {
-                if (!Set.of("text", "button", "item", "block").contains(type))
+                if (!Set.of("text", "button", "item", "block", "image").contains(type))
                     throw new IllegalArgumentException(id + "：请用button定义整块按钮，不在底板上挂动作");
                 controls.add(new Control(id, box(x, y, width, height), z,
                     node.getString("permission", ""), tooltip, bool(node, "clickable", true), actions,

@@ -296,6 +296,9 @@ final class DisplayRenderer {
     }
 
     private final java.util.function.Function<Player, Body> body;
+    /** Images that variable-built sources may name; replaced on reload. */
+    private volatile ImageCatalog images = ImageCatalog.EMPTY;
+    void images(ImageCatalog catalog) { images = Objects.requireNonNull(catalog); }
 
     DisplayRenderer(BiConsumer<Player, PacketWrapper<?>> sender) {
         this(sender, player -> new Body(player.getHeight(), player.getEyeHeight()));
@@ -323,7 +326,7 @@ final class DisplayRenderer {
      */
     void show(Player player, List<Prepared> prepared, Map<String, String> variables, RenderMode mode, boolean down) {
         View previous = views.get(player.getUniqueId());
-        View view = new View(player, prepared);
+        View view = new View(player, prepared, mode);
         views.put(player.getUniqueId(), view);
         try {
             Body pose = body.apply(player);
@@ -340,8 +343,10 @@ final class DisplayRenderer {
                     default -> EntityTypes.ITEM_DISPLAY;
                 };
                 if (type == EntityTypes.TEXT_DISPLAY) view.texts[i] = expand(p.visual.content(), variables);
+                else if (!p.visual.source().isEmpty() && p.visual.kind().equals("plane"))
+                    view.texts[i] = expand(p.visual.source(), variables);
                 send(player, new WrapperPlayServerSpawnEntity(id, UUID.randomUUID(), type, spawn, 0, 0, new Vector3d(0, 0, 0)));
-                send(player, new WrapperPlayServerEntityMetadata(id, metadata(p, variables, mode, anchor)));
+                send(player, new WrapperPlayServerEntityMetadata(id, metadata(p, variables, mode, anchor, images)));
             }
             var feet = new Location(eye.getX(), eye.getY() - pose.eye, eye.getZ(), eye.getYaw(),
                 down ? DOWN : eye.getPitch());
@@ -418,6 +423,16 @@ final class DisplayRenderer {
         if (view == null || view.player != player) return;
         for (int i = 0; i < view.prepared.size(); i++) {
             Prepared p = view.prepared.get(i);
+            if (p.visual.kind().equals("plane") && !p.visual.source().isEmpty()) {
+                String source = expand(p.visual.source(), variables);
+                if (source.equals(view.texts[i])) continue;
+                var image = image(p, variables, view.mode, images);
+                send(player, new WrapperPlayServerEntityMetadata(view.ids[i], List.of(
+                    new EntityData<>(12, EntityDataTypes.VECTOR3F, image.scale()),
+                    new EntityData<>(23, EntityDataTypes.ITEMSTACK, image.stack()))));
+                view.texts[i] = source;
+                continue;
+            }
             if (!p.visual.kind().equals("text")) continue;
             String text = expand(p.visual.content(), variables);
             if (text.equals(view.texts[i])) continue;
@@ -453,15 +468,39 @@ final class DisplayRenderer {
             (float) (scale * (p.up + p.ty) - anchor.y), (float) (scale * (p.tz - p.depth) - anchor.z));
     }
 
+    /** A variable-built image: the named catalog image fitted into the authored box, or nothing when unknown. */
+    record Dynamic(Vector3f scale, ItemStack stack) {}
+    static Dynamic image(Prepared p, Map<String, String> variables, RenderMode mode, ImageCatalog catalog) {
+        float scale = mode == RenderMode.ENHANCED ? MENU_RENDER_SCALE : 1;
+        var v = p.visual;
+        var image = catalog.find(expand(v.source(), variables));
+        if (image == null) return new Dynamic(new Vector3f(p.sx * scale, p.sy * scale, p.sz * scale), ItemStack.EMPTY);
+        double fx = 1, fy = 1;
+        if (v.width() / v.height() > image.aspect()) fx = v.height() * image.aspect() / v.width();
+        else fy = v.width() / image.aspect() / v.height();
+        return new Dynamic(new Vector3f((float) (p.sx * fx) * scale, (float) (p.sy * fy) * scale, p.sz * scale),
+            planeStack(image.model(), v.color()));
+    }
+    private static ItemStack planeStack(String model, int color) {
+        return ItemStack.builder().type(ItemTypes.PAPER).amount(1)
+            .component(ComponentTypes.ITEM_MODEL, new ItemModel(new ResourceLocation(model)))
+            .component(ComponentTypes.CUSTOM_MODEL_DATA_LISTS,
+                new ItemCustomModelData(List.of(), List.of(), List.of(), List.of(new Color(color))))
+            .build();
+    }
+
     private static List<EntityData<?>> metadata(Prepared p, Map<String, String> variables, RenderMode mode,
-                                                org.joml.Vector3d anchor) {
+                                                org.joml.Vector3d anchor, ImageCatalog catalog) {
         boolean enhanced = mode == RenderMode.ENHANCED;
         float scale = enhanced ? MENU_RENDER_SCALE : 1;
         Vector3f translation = translation(p, mode, anchor);
+        Dynamic dynamic = p.visual.kind().equals("plane") && !p.visual.source().isEmpty()
+            ? image(p, variables, mode, catalog) : null;
         List<EntityData<?>> data = new ArrayList<>(List.of(
             new EntityData<>(10, EntityDataTypes.INT, 0),
             new EntityData<>(11, EntityDataTypes.VECTOR3F, translation),
-            new EntityData<>(12, EntityDataTypes.VECTOR3F, new Vector3f(p.sx * scale, p.sy * scale, p.sz * scale)),
+            new EntityData<>(12, EntityDataTypes.VECTOR3F, dynamic != null ? dynamic.scale()
+                : new Vector3f(p.sx * scale, p.sy * scale, p.sz * scale)),
             new EntityData<>(13, EntityDataTypes.QUATERNION, new Quaternion4f(p.qx, p.qy, p.qz, p.qw)),
             new EntityData<>(15, EntityDataTypes.BYTE, (byte) 3),
             new EntityData<>(16, EntityDataTypes.INT, (15 << 4) | (15 << 20)),
@@ -481,12 +520,16 @@ final class DisplayRenderer {
             }
             default -> {
                 boolean plane = v.kind().equals("plane");
-                var stack = ItemStack.builder().type(plane ? ItemTypes.PAPER : ItemTypes.getByName(v.source())).amount(1);
-                String model = plane ? "lumamenu:plane" : v.itemModel();
-                if (!model.isEmpty()) stack.component(ComponentTypes.ITEM_MODEL, new ItemModel(new ResourceLocation(model)));
-                if (plane) stack.component(ComponentTypes.CUSTOM_MODEL_DATA_LISTS,
-                    new ItemCustomModelData(List.of(), List.of(), List.of(), List.of(new Color(v.color()))));
-                data.add(new EntityData<>(23, EntityDataTypes.ITEMSTACK, stack.build()));
+                ItemStack item;
+                if (dynamic != null) item = dynamic.stack();
+                else if (plane) item = planeStack(v.itemModel().isEmpty() ? "lumamenu:plane" : v.itemModel(), v.color());
+                else {
+                    var stack = ItemStack.builder().type(ItemTypes.getByName(v.source())).amount(1);
+                    if (!v.itemModel().isEmpty())
+                        stack.component(ComponentTypes.ITEM_MODEL, new ItemModel(new ResourceLocation(v.itemModel())));
+                    item = stack.build();
+                }
+                data.add(new EntityData<>(23, EntityDataTypes.ITEMSTACK, item));
                 data.add(new EntityData<>(24, EntityDataTypes.BYTE, (byte) 0));
             }
         }
@@ -508,9 +551,11 @@ final class DisplayRenderer {
         final String[] texts;
         /** Camera rig: {@code foot} rides the viewer, {@code camera} rides {@code foot}. */
         final int foot = IDS.decrementAndGet(), camera = IDS.decrementAndGet();
-        View(Player player, List<Prepared> prepared) {
+        final RenderMode mode;
+        View(Player player, List<Prepared> prepared, RenderMode mode) {
             this.player = player;
             this.prepared = prepared;
+            this.mode = mode;
             ids = new int[prepared.size()];
             texts = new String[prepared.size()];
             for (int i = 0; i < ids.length; i++) ids[i] = IDS.decrementAndGet();

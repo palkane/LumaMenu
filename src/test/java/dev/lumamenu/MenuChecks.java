@@ -72,6 +72,7 @@ public final class MenuChecks {
         bodyCompaction();
         ownDialogs();
         resources();
+        images();
         RotationHitChecks.run(root);
         TransformChecks.run(root);
         ModelFitChecks.run(root);
@@ -81,6 +82,11 @@ public final class MenuChecks {
 
     private static Map<String, Layouts.Page> demo() throws Exception {
         return Layouts.load(Path.of("src/main/resources/layouts"));
+    }
+    private static YamlConfiguration yaml(String text) throws Exception {
+        YamlConfiguration config = new YamlConfiguration();
+        config.loadFromString(text);
+        return config;
     }
     private static Map<String, Layouts.Page> parse(String yaml) throws Exception {
         YamlConfiguration config = new YamlConfiguration();
@@ -1567,6 +1573,141 @@ public final class MenuChecks {
         int ends = host.ends;
         engine.close(client.player);
         check(host.ends == ends + 1, "closing always runs the host restore path");
+    }
+
+    private static java.awt.image.BufferedImage image(int width, int height, int argb) {
+        var image = new java.awt.image.BufferedImage(width, height, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) image.setRGB(x, y, argb);
+        return image;
+    }
+    private static com.github.retrooper.packetevents.protocol.item.ItemStack stack(WrapperPlayServerEntityMetadata metadata) {
+        return (com.github.retrooper.packetevents.protocol.item.ItemStack) value(metadata.getEntityMetadata(), 23);
+    }
+    private static String model(com.github.retrooper.packetevents.protocol.item.ItemStack stack) {
+        return stack.getComponent(ComponentTypes.ITEM_MODEL).map(m -> m.getModelLocation().toString()).orElse("");
+    }
+    private static int tint(com.github.retrooper.packetevents.protocol.item.ItemStack stack) {
+        return stack.getComponent(ComponentTypes.CUSTOM_MODEL_DATA_LISTS).orElseThrow().getColors().getFirst().asRGB();
+    }
+
+    private static void images() throws Exception {
+        Path dir = Files.createTempDirectory(root, "images-");
+        Path layouts = Files.createDirectories(dir.resolve("layouts"));
+        Path folder = Files.createDirectories(dir.resolve("images/mainmenu"));
+        // Asymmetric: only the top-left pixel is red, so any mirror or flip is visible.
+        var wide = image(31, 14, 0xFF2040C0);
+        wide.setRGB(0, 0, 0xFFFF0000);
+        ImageIO.write(wide, "png", folder.resolve("Wide Tab.png").toFile());
+        ImageIO.write(image(20, 20, 0x80FFFFFF), "png", folder.resolve("square.png").toFile());
+        check(ImageCatalog.scan(dir.resolve("missing")).all().isEmpty(), "a missing images folder is an empty catalog");
+        var catalog = ImageCatalog.scan(dir.resolve("images"));
+        check(catalog.all().size() == 2, "every PNG under images/ is catalogued");
+        var wideImage = catalog.resolve("mainmenu/Wide Tab.png");
+        check(wideImage.width() == 31 && wideImage.height() == 14 && wideImage.paddedWidth() == 32
+            && wideImage.paddedHeight() == 16, "texture is padded to multiples of 16 without resampling");
+        check(wideImage.model().matches("lumamenu:image/mainmenu/wide_tab_[0-9a-f]{8}")
+            && !wideImage.model().equals(catalog.resolve("mainmenu/square.png").model()),
+            "names needing changes become valid resource paths with a stable hash");
+        check(catalog.resolve("mainmenu/square.png").model().equals("lumamenu:image/mainmenu/square"),
+            "already valid names are kept as they are");
+        check(ImageCatalog.path("mainmenu/Wide Tab.png").equals(ImageCatalog.path("mainmenu/Wide Tab.png"))
+            && !ImageCatalog.path("a/B.png").equals(ImageCatalog.path("a/b_.png")), "model names are stable and distinct");
+        var diamond = catalog.resolve("minecraft:item/diamond");
+        check(diamond.model().equals("lumamenu:image/vanilla/item/diamond") && diamond.texture().equals("minecraft:item/diamond")
+            && diamond.file() == null, "vanilla item textures are referenced, not copied");
+        check(catalog.resolve("minecraft:block/stone").texture().equals("minecraft:block/stone"), "vanilla block textures too");
+        rejects(() -> catalog.resolve("mainmenu/nope.png"), "unknown PNG paths are rejected at reload");
+        rejects(() -> catalog.resolve("minecraft:gui/sprites/container/slot/shield"),
+            "GUI-atlas sprites cannot be item models and are rejected");
+        Files.writeString(layouts.resolve("pics.yml"), """
+            schema-version: 3
+            id: pics
+            canvas: {width: 452, height: 180}
+            frontend:
+              wide: {type: image, source: 'mainmenu/Wide Tab.png', width: 62, height: 62, offset: {x: 100, y: 50}, tooltip: 宽图, actions: 'callback: wide'}
+              square: {type: image, source: mainmenu/square.png, width: 40, height: 20, tintable: true, color: '#FF0000', offset: {x: 200, y: 50}}
+              plain: {type: image, source: mainmenu/square.png, color: '#00FF00', offset: {x: 230, y: 50}}
+              diamond: {type: image, source: 'minecraft:item/diamond', width: 16, height: 16, offset: {x: 260, y: 50}}
+              dynamic: {type: image, source: '{icon}', width: 40, height: 40, offset: {x: 320, y: 50}, actions: 'callback: icon'}
+            """);
+        var page = Layouts.load(layouts).get("pics");
+        Map<String, Layouts.Visual> visuals = new HashMap<>();
+        for (var v : page.visuals()) visuals.put(v.id(), v);
+        var w = visuals.get("wide");
+        check(w.kind().equals("plane") && w.itemModel().equals(wideImage.model()) && w.source().isEmpty()
+            && Math.abs(w.width() - 62) < 1e-9 && Math.abs(w.height() - 62 * 14 / 31.0) < 1e-9,
+            "a wide image fills the box width and keeps its aspect (contain), like DialogMenu");
+        var wideControl = page.controls().stream().filter(c -> c.id().equals("wide")).findFirst().orElseThrow();
+        check(wideControl.box().width() == 62 && wideControl.box().height() == 28 && wideControl.actions().equals(List.of("callback: wide")),
+            "the click area is the fitted image, not the whole box");
+        var square = visuals.get("square");
+        check(Math.abs(square.width() - 20) < 1e-9 && Math.abs(square.height() - 20) < 1e-9 && square.color() == 0xFF0000,
+            "a square image in a wide box keeps its aspect; tintable applies the color");
+        check(visuals.get("plain").color() == 0xFFFFFF && visuals.get("plain").width() == 16,
+            "untinted images ignore color and default to a 16 box");
+        check(visuals.get("diamond").itemModel().equals("lumamenu:image/vanilla/item/diamond"), "vanilla source model");
+        var dynamic = visuals.get("dynamic");
+        check(dynamic.source().equals("{icon}") && dynamic.itemModel().isEmpty() && dynamic.width() == 40,
+            "variable sources keep the expression and the box until shown");
+        rejects(() -> Layouts.parse("test", yaml("id: test\nfrontend: {i: {type: image}}"), catalog), "image needs a source");
+        rejects(() -> Layouts.parse("test", yaml("id: test\nfrontend: {i: {type: rectangle, tintable: true}}"), catalog),
+            "tintable only on images");
+        rejects(() -> Layouts.parse("test", yaml("id: test\nfrontend: {i: {type: image, source: mainmenu/square.png, atlas: {columns: 2, rows: 1}}}"), catalog),
+            "atlas cropping is refused instead of silently showing the whole sheet");
+        Client client = new Client();
+        List<PacketWrapper<?>> sent = new ArrayList<>();
+        var renderer = displays((p, packet) -> { serialize(packet); sent.add(packet); });
+        renderer.images(catalog);
+        var prepared = DisplayRenderer.prepare(page, MAPPING);
+        renderer.show(client.player, prepared, Map.of("icon", "mainmenu/Wide Tab.png"));
+        var metadata = sent.stream().filter(WrapperPlayServerEntityMetadata.class::isInstance)
+            .map(WrapperPlayServerEntityMetadata.class::cast).toList();
+        Map<String, WrapperPlayServerEntityMetadata> byId = new HashMap<>();
+        for (int i = 0; i < prepared.size(); i++) byId.put(prepared.get(i).visual().id(), metadata.get(i));
+        check(model(stack(byId.get("wide"))).equals(wideImage.model()) && tint(stack(byId.get("wide"))) == 0xFFFFFF,
+            "static images send their model, untinted");
+        check(tint(stack(byId.get("square"))) == 0xFF0000, "tinted images send their color");
+        int dynamicIndex = 0;
+        while (!prepared.get(dynamicIndex).visual().id().equals("dynamic")) dynamicIndex++;
+        var p = prepared.get(dynamicIndex);
+        var scale = (com.github.retrooper.packetevents.util.Vector3f) value(byId.get("dynamic").getEntityMetadata(), 12);
+        check(model(stack(byId.get("dynamic"))).equals(wideImage.model())
+            && Math.abs(scale.getX() - p.sx()) < 1e-6 && Math.abs(scale.getY() - p.sy() * 14 / 31) < 1e-6,
+            "a variable source resolves at show time and is fitted into its box");
+        sent.clear();
+        renderer.updateText(client.player, Map.of("icon", "mainmenu/square.png"));
+        check(sent.size() == 1 && model(stack((WrapperPlayServerEntityMetadata) sent.getFirst())).equals("lumamenu:image/mainmenu/square"),
+            "changing the variable swaps the image with one metadata packet");
+        var squareScale = (com.github.retrooper.packetevents.util.Vector3f) value(((WrapperPlayServerEntityMetadata) sent.getFirst()).getEntityMetadata(), 12);
+        check(Math.abs(squareScale.getX() - p.sx()) < 1e-6 && Math.abs(squareScale.getY() - p.sy()) < 1e-6,
+            "the new image is refitted to its own aspect");
+        sent.clear();
+        renderer.updateText(client.player, Map.of("icon", "mainmenu/square.png"));
+        check(sent.isEmpty(), "an unchanged source sends nothing");
+        renderer.updateText(client.player, Map.of("icon", "mainmenu/nope.png"));
+        check(stack((WrapperPlayServerEntityMetadata) sent.getFirst()).isEmpty(), "an unknown runtime image shows nothing");
+        renderer.close(client.player);
+        Path zip = MenuResources.export(dir.resolve("export"), true, catalog, Set.of("lumamenu:image/vanilla/item/diamond"));
+        try (ZipFile archive = new ZipFile(zip.toFile())) {
+            String path = wideImage.model().substring(ImageCatalog.MODEL_PREFIX.length());
+            var texture = ImageIO.read(archive.getInputStream(archive.getEntry("assets/lumamenu/textures/item/image/" + path + ".png")));
+            check(texture.getWidth() == 32 && texture.getHeight() == 16 && texture.getRGB(0, 0) == 0xFFFF0000
+                && texture.getRGB(30, 13) == 0xFF2040C0 && (texture.getRGB(31, 0) >>> 24) == 0 && (texture.getRGB(0, 15) >>> 24) == 0,
+                "padded texture keeps the original pixels in the top-left and pads with transparency");
+            var model = JsonParser.parseString(new String(archive.getInputStream(
+                archive.getEntry("assets/lumamenu/models/image/" + path + ".json")).readAllBytes())).getAsJsonObject();
+            var uv = model.getAsJsonArray("elements").get(0).getAsJsonObject().getAsJsonObject("faces")
+                .getAsJsonObject("north").getAsJsonArray("uv");
+            check(uv.get(2).getAsFloat() == 15.5f && uv.get(3).getAsFloat() == 14f
+                && model.getAsJsonObject("textures").get("image").getAsString().equals("lumamenu:item/image/" + path),
+                "the face UV covers exactly the original pixels of the items-atlas texture");
+            check(archive.getEntry("assets/lumamenu/items/image/" + path + ".json") != null
+                && archive.getEntry("assets/lumamenu/models/image/vanilla/item/diamond.json") != null
+                && archive.getEntry("assets/lumamenu/models/image/vanilla/block/stone.json") == null,
+                "item definitions for every image, vanilla models only where pages use them");
+            Path evidence = Path.of("build/native-evidence/image-model.json");
+            Files.writeString(evidence, model.toString());
+        }
     }
 
     private static void resources() throws Exception {

@@ -188,6 +188,15 @@ final class MenuEngine implements LumaMenuApi {
         host.message(player, "依次点击左上、右下十字中心，每点3次，共6次；右上角×取消，不覆盖旧值。");
     }
 
+    /** Image item models the compiled pages reference, for the resource-pack export. */
+    Set<String> imageModels() {
+        Set<String> models = new TreeSet<>();
+        for (var page : compiled.pages().values())
+            for (var visual : page.visuals())
+                if (visual.itemModel().startsWith(ImageCatalog.MODEL_PREFIX)) models.add(visual.itemModel());
+        return models;
+    }
+
     void reload(Path layouts) throws Exception {
         reload(layouts, compiled.rotationHitStep());
     }
