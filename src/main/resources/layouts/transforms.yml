@@ -1,27 +1,30 @@
 schema-version: 3
 id: transforms
-# Hit area 452x180. The panel and title reach into the free screen space above and below it.
-canvas: {width: 452, height: 180}
+# Hit area 344x126, centred in the Dialog body. The panel and title reach a little beyond it, but stay
+# clear of the top HUD and of the experience bar (about 33 below this canvas on small GUI heights).
+canvas: {width: 344, height: 126}
 frontend:
   panel:
     type: group
-    offset: {x: 226, y: 70.5, z: -1}
+    offset: {x: 172, y: 47, z: -1}
     children:
-      outline: {type: frame, width: 468, height: 237, color: '#000000'}
-      fill: {type: rectangle, width: 466, height: 235, color: '#C6C6C6', offset: {z: 0.01}}
-      light-top: {type: rectangle, width: 464, height: 2, color: '#FFFFFF', offset: {x: -1, y: -116.5, z: 0.02}}
-      light-left: {type: rectangle, width: 2, height: 233, color: '#FFFFFF', offset: {x: -232, y: -1, z: 0.02}}
-      shade-right: {type: rectangle, width: 2, height: 233, color: '#555555', offset: {x: 232, y: 1, z: 0.02}}
-      shade-bottom: {type: rectangle, width: 464, height: 2, color: '#555555', offset: {x: 1, y: 116.5, z: 0.02}}
+      outline: {type: frame, width: 360, height: 168, color: '#000000'}
+      fill: {type: rectangle, width: 358, height: 166, color: '#C6C6C6', offset: {z: 0.01}}
+      light-top: {type: rectangle, width: 356, height: 2, color: '#FFFFFF', offset: {x: -1, y: -82, z: 0.02}}
+      light-left: {type: rectangle, width: 2, height: 164, color: '#FFFFFF', offset: {x: -178, y: -1, z: 0.02}}
+      shade-right: {type: rectangle, width: 2, height: 164, color: '#555555', offset: {x: 178, y: 1, z: 0.02}}
+      shade-bottom: {type: rectangle, width: 356, height: 2, color: '#555555', offset: {x: 1, y: 82, z: 0.02}}
+      rule-dark: {type: rectangle, width: 344, height: 1, color: '#8B8B8B', offset: {y: -59.5, z: 0.03}}
+      rule-light: {type: rectangle, width: 344, height: 1, color: '#FFFFFF', offset: {y: -58.5, z: 0.03}}
   title:
     type: text
     content: XYZ 拉伸与旋转
     color: '#404040'
     size: 10
-    offset: {x: 226, y: -31, z: 1}
+    offset: {x: 172, y: -24, z: 1}
   models:
     type: group
-    offset: {x: 100, y: 65, z: 2}
+    offset: {x: 64, y: 42, z: 2}
     stretch: {x: 1.2, y: 0.9, z: 1.1}
     rotation: {z: 12}
     children:
@@ -47,7 +50,7 @@ frontend:
         actions: 'callback: block'
   shapes:
     type: group
-    offset: {x: 250, y: 65, z: 3}
+    offset: {x: 176, y: 38, z: 3}
     stretch: {x: 1.3, y: 0.8, z: 1.1}
     rotation: {x: 10, y: 12, z: -12}
     children:
@@ -78,7 +81,7 @@ frontend:
     color: '#555555'
     stretch: {x: 1.2, y: 0.9, z: 1}
     rotation: {x: 10, y: -15, z: 20}
-    offset: {x: 370, y: 65, z: 4}
+    offset: {x: 284, y: 42, z: 4}
     tooltip: 点击旋转十字
     actions: 'callback: grid'
   button:
@@ -89,11 +92,11 @@ frontend:
     height: 24
     stretch: {x: 1.15, y: 0.85, z: 1}
     rotation: {x: 8, y: -10, z: -8}
-    offset: {x: 226, y: 127, z: 5}
+    offset: {x: 172, y: 94, z: 5}
     actions: 'callback: button'
   status:
     type: text
     content: '{status}'
     width: 280
     color: '#404040'
-    offset: {x: 226, y: 164, z: 6}
+    offset: {x: 172, y: 119, z: 6}

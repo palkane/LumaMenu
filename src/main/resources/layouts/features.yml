@@ -3,83 +3,84 @@ id: features
 events:
   open: 'sound: UI_BUTTON_CLICK-0.5-1'
   close: 'tell: 已关闭功能演示'
-# Hit area 452x180. The panel and title reach into the free screen space above and below it.
-canvas: {width: 452, height: 180}
+# Hit area 344x126, centred in the Dialog body. The panel and title reach a little beyond it, but stay
+# clear of the top HUD and of the experience bar (about 33 below this canvas on small GUI heights).
+canvas: {width: 344, height: 126}
 pages:
   features:
     title: 功能演示
     frontend:
       panel: &panel
         type: group
-        offset: {x: 226, y: 70.5, z: -1}
+        offset: {x: 172, y: 47, z: -1}
         children:
-          outline: {type: frame, width: 468, height: 237, color: '#000000'}
-          fill: {type: rectangle, width: 466, height: 235, color: '#C6C6C6', offset: {z: 0.01}}
-          light-top: {type: rectangle, width: 464, height: 2, color: '#FFFFFF', offset: {x: -1, y: -116.5, z: 0.02}}
-          light-left: {type: rectangle, width: 2, height: 233, color: '#FFFFFF', offset: {x: -232, y: -1, z: 0.02}}
-          shade-right: {type: rectangle, width: 2, height: 233, color: '#555555', offset: {x: 232, y: 1, z: 0.02}}
-          shade-bottom: {type: rectangle, width: 464, height: 2, color: '#555555', offset: {x: 1, y: 116.5, z: 0.02}}
-          rule-dark: {type: rectangle, width: 452, height: 1, color: '#8B8B8B', offset: {y: -88, z: 0.03}}
-          rule-light: {type: rectangle, width: 452, height: 1, color: '#FFFFFF', offset: {y: -87, z: 0.03}}
-      title: {type: text, content: 功能演示, size: 10, color: '#404040', offset: {x: 226, y: -31, z: 1}}
+          outline: {type: frame, width: 360, height: 168, color: '#000000'}
+          fill: {type: rectangle, width: 358, height: 166, color: '#C6C6C6', offset: {z: 0.01}}
+          light-top: {type: rectangle, width: 356, height: 2, color: '#FFFFFF', offset: {x: -1, y: -82, z: 0.02}}
+          light-left: {type: rectangle, width: 2, height: 164, color: '#FFFFFF', offset: {x: -178, y: -1, z: 0.02}}
+          shade-right: {type: rectangle, width: 2, height: 164, color: '#555555', offset: {x: 178, y: 1, z: 0.02}}
+          shade-bottom: {type: rectangle, width: 356, height: 2, color: '#555555', offset: {x: 1, y: 82, z: 0.02}}
+          rule-dark: {type: rectangle, width: 344, height: 1, color: '#8B8B8B', offset: {y: -59.5, z: 0.03}}
+          rule-light: {type: rectangle, width: 344, height: 1, color: '#FFFFFF', offset: {y: -58.5, z: 0.03}}
+      title: {type: text, content: 功能演示, size: 10, color: '#404040', offset: {x: 172, y: -24, z: 1}}
       legacy:
         type: text
         content: '&c红色 &2绿色 &9&n下划线&r &m删除线&r &o斜体&r &#FF8800十六进制色'
         color: '#404040'
-        offset: {x: 226, y: 9, z: 1}
+        offset: {x: 165, y: 6, z: 1}
       left-card:
         type: group
-        offset: {x: 76, y: 52, z: 0.5}
+        offset: {x: 58, y: 41, z: 0.5}
         children:
-          dark: {type: rectangle, width: 140, height: 60, color: '#8B8B8B'}
-          light: {type: rectangle, width: 139, height: 59, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
-          fill: {type: rectangle, width: 138, height: 58, color: '#BDBDBD', offset: {z: 0.02}}
+          dark: {type: rectangle, width: 108, height: 50, color: '#8B8B8B'}
+          light: {type: rectangle, width: 107, height: 49, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
+          fill: {type: rectangle, width: 106, height: 48, color: '#BDBDBD', offset: {z: 0.02}}
       center-card:
         type: group
-        offset: {x: 226, y: 52, z: 0.5}
+        offset: {x: 172, y: 41, z: 0.5}
         children:
-          dark: {type: rectangle, width: 140, height: 60, color: '#8B8B8B'}
-          light: {type: rectangle, width: 139, height: 59, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
-          fill: {type: rectangle, width: 138, height: 58, color: '#BDBDBD', offset: {z: 0.02}}
+          dark: {type: rectangle, width: 108, height: 50, color: '#8B8B8B'}
+          light: {type: rectangle, width: 107, height: 49, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
+          fill: {type: rectangle, width: 106, height: 48, color: '#BDBDBD', offset: {z: 0.02}}
       right-card:
         type: group
-        offset: {x: 376, y: 52, z: 0.5}
+        offset: {x: 286, y: 41, z: 0.5}
         children:
-          dark: {type: rectangle, width: 140, height: 60, color: '#8B8B8B'}
-          light: {type: rectangle, width: 139, height: 59, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
-          fill: {type: rectangle, width: 138, height: 58, color: '#BDBDBD', offset: {z: 0.02}}
+          dark: {type: rectangle, width: 108, height: 50, color: '#8B8B8B'}
+          light: {type: rectangle, width: 107, height: 49, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
+          fill: {type: rectangle, width: 106, height: 48, color: '#BDBDBD', offset: {z: 0.02}}
       left:
         type: text
-        content: 左对齐：The quick brown fox，中文与 English 混排，按真实字宽换行。
+        content: 左对齐：中文与 English 混排，按真实字宽换行。
         color: '#404040'
-        line-width: 126
+        line-width: 98
         max-lines: 4
         alignment: left
-        offset: {x: 76, y: 52, z: 1}
+        offset: {x: 58, y: 41, z: 1}
       center:
         type: text
-        content: 居中：固定宽度内换行，动态内容超出 max-lines 时以省略号截断。
+        content: 居中：固定宽度内换行，超行以省略号截断。
         color: '#404040'
-        line-width: 126
+        line-width: 98
         max-lines: 4
         alignment: center
-        offset: {x: 226, y: 52, z: 1}
+        offset: {x: 172, y: 41, z: 1}
       right:
         type: text
-        content: '&l右对齐&r：每行补齐到同样宽度，位置和点击范围固定不变。'
+        content: '&l右对齐&r：每行补齐同宽，点击范围不变。'
         color: '#404040'
-        line-width: 126
+        line-width: 98
         max-lines: 4
         alignment: right
-        offset: {x: 376, y: 52, z: 1}
-      faint: {type: text, content: 半透明文字 opacity 128, color: '#404040', opacity: 128, offset: {x: 226, y: 98, z: 1}}
+        offset: {x: 286, y: 41, z: 1}
+      faint: {type: text, content: 半透明文字 opacity 128, color: '#404040', opacity: 128, offset: {x: 172, y: 75, z: 1}}
       gesture:
         type: button
         style: vanilla
         content: 单击 / 双击
-        width: 140
-        height: 24
-        offset: {x: 76, y: 126, z: 2}
+        width: 108
+        height: 22
+        offset: {x: 58, y: 97, z: 2}
         tooltip: 300毫秒内再次点击为双击
         actions:
           single: ['tell: 单击', 'sound: UI_BUTTON_CLICK-0.5-1']
@@ -88,45 +89,45 @@ pages:
         type: button
         style: vanilla
         content: 原位执行命令
-        width: 140
-        height: 24
-        offset: {x: 226, y: 126, z: 2}
+        width: 108
+        height: 22
+        offset: {x: 172, y: 97, z: 2}
         tooltip: command-in-place：菜单保持打开
         actions: 'command-in-place: lumamenu mode'
       next:
         type: button
         style: vanilla
         content: 原生关闭页
-        width: 140
-        height: 24
-        offset: {x: 376, y: 126, z: 2}
+        width: 108
+        height: 22
+        offset: {x: 286, y: 97, z: 2}
         actions: 'open: features-native'
-      status: {type: text, content: '{status}', color: '#6B6B6B', offset: {x: 226, y: 162, z: 1}}
+      status: {type: text, content: '{status}', color: '#6B6B6B', offset: {x: 172, y: 120, z: 1}}
   features-native:
     title: 原生关闭
     corner-close: false
     frontend:
       panel: *panel
-      title: {type: text, content: 原生关闭, size: 10, color: '#404040', offset: {x: 226, y: -31, z: 1}}
+      title: {type: text, content: 原生关闭, size: 10, color: '#404040', offset: {x: 172, y: -24, z: 1}}
       card:
         type: group
-        offset: {x: 226, y: 50, z: 0.5}
+        offset: {x: 172, y: 30, z: 0.5}
         children:
-          dark: {type: rectangle, width: 440, height: 60, color: '#8B8B8B'}
-          light: {type: rectangle, width: 439, height: 59, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
-          fill: {type: rectangle, width: 438, height: 58, color: '#BDBDBD', offset: {z: 0.02}}
+          dark: {type: rectangle, width: 336, height: 44, color: '#8B8B8B'}
+          light: {type: rectangle, width: 335, height: 43, color: '#FFFFFF', offset: {x: 0.5, y: 0.5, z: 0.01}}
+          fill: {type: rectangle, width: 334, height: 42, color: '#BDBDBD', offset: {z: 0.02}}
       note:
         type: text
         content: '本页 corner-close: false，用屏幕底部原生“关闭”按钮或 Esc 关闭。'
         color: '#404040'
-        line-width: 400
+        line-width: 310
         max-lines: 2
-        offset: {x: 226, y: 50, z: 1}
+        offset: {x: 172, y: 30, z: 1}
       back:
         type: button
         style: vanilla
         content: 返回
-        width: 215
-        height: 24
-        offset: {x: 226, y: 116, z: 2}
+        width: 165
+        height: 22
+        offset: {x: 172, y: 80, z: 2}
         actions: back
