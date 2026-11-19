@@ -12,7 +12,7 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 final class MenuCache {
-    private static final int FORMAT = 4;
+    private static final int FORMAT = 5;
     private static final Gson JSON = new Gson();
     private final Path file;
 
@@ -218,6 +218,13 @@ final class MenuCache {
         });
         return result;
     }
+    /** One page's displays for a mode, exactly as the cached profiles build them (moved pages are built at runtime). */
+    static List<DisplayRenderer.Prepared> prepare(Layouts.Page page, Calibration.Mapping mapping, RenderMode mode,
+                                                  boolean down) {
+        var base = DisplayRenderer.prepare(page, mapping);
+        return mode == RenderMode.ENHANCED ? DisplayRenderer.enhanced(base, mapping)
+            : DisplayRenderer.compatible(base, mapping, down);
+    }
     private static Map<String, List<DisplayRenderer.Prepared>> prepareProfile(Map<String, Layouts.Page> pages,
                                                                             Calibration.Mapping mapping) {
         Map<String, List<DisplayRenderer.Prepared>> prepared = new LinkedHashMap<>();
@@ -229,11 +236,12 @@ final class MenuCache {
             JsonObject json = JSON.fromJson(input, JsonObject.class);
             if (json == null || !json.has("format"))
                 throw new IOException("不兼容的编译缓存，请执行reload");
-            if (json.get("format").getAsInt() == 2 || json.get("format").getAsInt() == 3) {
+            int format = json.get("format").getAsInt();
+            if (format >= 2 && format < FORMAT) {
                 // Backend migration: keep saved layouts/calibrations, rebuild only derived geometry once.
                 Map<String, Layouts.Page> pages = new LinkedHashMap<>();
                 json.getAsJsonObject("pages").entrySet().forEach(entry ->
-                    pages.put(entry.getKey(), JSON.fromJson(entry.getValue(), Layouts.Page.class)));
+                    pages.put(entry.getKey(), images(JSON.fromJson(entry.getValue(), Layouts.Page.class))));
                 List<Calibration.Mapping> mappings = new ArrayList<>();
                 for (String key : json.getAsJsonObject("profiles").keySet()) {
                     String[] fields = key.split("/");
@@ -255,6 +263,20 @@ final class MenuCache {
             throw new IOException("无法恢复编译缓存，请检查后reload", error);
         }
     }
+    /** Formats before 5 stored images as {@code plane} visuals carrying an item model or a variable source. */
+    private static Layouts.Page images(Layouts.Page page) {
+        List<Layouts.Visual> visuals = new ArrayList<>();
+        for (var v : page.visuals())
+            visuals.add(v.kind().equals("plane") && (!v.itemModel().isEmpty() || !v.source().isEmpty())
+                ? new Layouts.Visual(v.id(), "image", v.x(), v.y(), v.z(), v.width(), v.height(), v.size(), v.color(),
+                    v.content(), v.source(), v.itemModel(), v.rx(), v.ry(), v.rz(), v.bx(), v.by(), v.bz(),
+                    v.transforms(), v.text()) : v);
+        return new Layouts.Page(page.id(), page.title(), page.permission(), visuals, page.controls(), page.regions(),
+            page.surface(), page.surfaceOriginX(), page.surfaceOriginY(), page.surfaceWidth(), page.surfaceHeight(),
+            page.surfaceRows(), page.surfaceAdvance(), page.bodyWidth(), page.chrome(), page.lookDown(),
+            page.cornerClose(), page.openEvents(), page.closeEvents(), page.file());
+    }
+
     boolean exists() { return Files.isRegularFile(file); }
     void save(State state) throws IOException {
         Files.createDirectories(file.toAbsolutePath().getParent());

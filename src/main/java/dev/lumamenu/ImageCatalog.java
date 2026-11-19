@@ -12,7 +12,9 @@ import java.util.regex.Pattern;
 /**
  * PNG images for {@code type: image}. Each image becomes a flat item model: the texture is padded with transparent
  * pixels to multiples of 16 (so no sprite lowers the item atlas mip level) and the face UV covers only the original
- * pixels. Vanilla {@code minecraft:item/...} and {@code minecraft:block/...} textures are referenced, not copied.
+ * pixels. Vanilla {@code minecraft:item/...} and {@code minecraft:block/...} textures and CraftEngine PNGs
+ * ({@code craftengine:<pack>/<path>}) are referenced, not copied. CraftEngine font images and items are resolved by
+ * {@link CraftEngineImages} and drawn as glyphs or items instead.
  */
 final class ImageCatalog {
     record Image(String source, String model, int width, int height, int paddedWidth, int paddedHeight,
@@ -22,17 +24,44 @@ final class ImageCatalog {
     static final ImageCatalog EMPTY = new ImageCatalog(Map.of());
     static final String MODEL_PREFIX = "lumamenu:image/";
     private static final String VANILLA = MODEL_PREFIX + "vanilla/";
+    private static final String CRAFT_ENGINE = MODEL_PREFIX + "ce/";
     private static final Pattern VANILLA_SOURCE = Pattern.compile("minecraft:(item|block)/[a-z0-9_./-]+");
     private static final Pattern SAFE = Pattern.compile("[a-z0-9_./-]+");
     /** Vanilla item and block textures are 16x16; the rare larger ones still keep their square aspect. */
     private static final int VANILLA_SIZE = 16;
     private final Map<String, Image> images;
+    private final CraftEngineImages craftEngine;
+    private final Themes themes;
+    /** The theme of the layout file being compiled; the default one outside {@link #themed}. */
+    private final Themes.Theme theme;
 
-    private ImageCatalog(Map<String, Image> images) { this.images = Map.copyOf(images); }
+    private ImageCatalog(Map<String, Image> images) { this(images, null, Themes.BUILT_IN); }
+    private ImageCatalog(Map<String, Image> images, CraftEngineImages craftEngine, Themes themes) {
+        this(images, craftEngine, themes, themes.get(null));
+    }
+    private ImageCatalog(Map<String, Image> images, CraftEngineImages craftEngine, Themes themes, Themes.Theme theme) {
+        this.images = Map.copyOf(images);
+        this.craftEngine = craftEngine;
+        this.themes = themes;
+        this.theme = theme;
+    }
 
-    /** Every PNG under {@code directory}, keyed by its slash-separated relative path; a missing directory is empty. */
+    /** The same images with {@code name}'s theme (null: the default) for themed nodes and {@code '@color'}s. */
+    ImageCatalog themed(String name) { return new ImageCatalog(images, craftEngine, themes, themes.get(name)); }
+    Themes.Theme theme() { return theme; }
+    Themes themes() { return themes; }
+
+    /**
+     * Every PNG under {@code directory}, keyed by its slash-separated relative path; a missing directory has none.
+     * CraftEngine sources come from {@code plugins/CraftEngine/resources}, beside this plugin's folder; themes from
+     * {@code themes.yml} beside {@code images/}.
+     */
     static ImageCatalog scan(Path directory) throws IOException {
-        if (!Files.isDirectory(directory)) return EMPTY;
+        Path plugins = directory.toAbsolutePath().getParent() == null ? null
+            : directory.toAbsolutePath().getParent().getParent();
+        var craftEngine = plugins == null ? null : new CraftEngineImages(plugins.resolve("CraftEngine/resources"));
+        Themes themes = Themes.load(directory.toAbsolutePath().resolveSibling("themes.yml"));
+        if (!Files.isDirectory(directory)) return new ImageCatalog(Map.of(), craftEngine, themes);
         Map<String, Image> images = new TreeMap<>();
         Set<String> models = new HashSet<>();
         try (var paths = Files.walk(directory)) {
@@ -49,7 +78,7 @@ final class ImageCatalog {
                     pad(width), pad(height), file, "lumamenu:item/image/" + path));
             }
         }
-        return new ImageCatalog(images);
+        return new ImageCatalog(images, craftEngine, themes);
     }
 
     static boolean dynamic(String source) { return source.indexOf('{') >= 0; }
@@ -58,13 +87,23 @@ final class ImageCatalog {
     Image resolve(String source) {
         Image image = images.get(source);
         if (image != null) return image;
+        if (source.startsWith(CraftEngineImages.PREFIX)) {
+            var texture = craftEngine().texture(source);
+            return new Image(source, CRAFT_ENGINE + texture.texture().replace(':', '/'), texture.width(),
+                texture.height(), texture.width(), texture.height(), null, texture.texture());
+        }
         if (VANILLA_SOURCE.matcher(source).matches()) {
             String texture = source.substring("minecraft:".length());
             return new Image(source, VANILLA + texture, VANILLA_SIZE, VANILLA_SIZE, VANILLA_SIZE, VANILLA_SIZE,
                 null, source);
         }
         throw new IllegalArgumentException("找不到图片：" + source
-            + "（放在 plugins/LumaMenu/images/ 下写相对路径，或用 minecraft:item/… / minecraft:block/…）");
+            + "（放在 plugins/LumaMenu/images/ 下写相对路径，或用 minecraft:item/… / minecraft:block/… / craftengine:…）");
+    }
+
+    CraftEngineImages craftEngine() {
+        if (craftEngine == null) throw new IllegalArgumentException("未找到CraftEngine资源目录");
+        return craftEngine;
     }
 
     /** Runtime lookup for a variable-built source; null when it names no image. */
@@ -94,6 +133,9 @@ final class ImageCatalog {
             if (model.startsWith(VANILLA)) {
                 String texture = model.substring(VANILLA.length());
                 model(pack, resolve("minecraft:" + texture));
+            } else if (model.startsWith(CRAFT_ENGINE)) {
+                String texture = model.substring(CRAFT_ENGINE.length()).replaceFirst("/", ":");
+                model(pack, new Image(model, model, VANILLA_SIZE, VANILLA_SIZE, VANILLA_SIZE, VANILLA_SIZE, null, texture));
             }
     }
 

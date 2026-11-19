@@ -16,6 +16,17 @@ final class NativeCameraRigChecks {
         checks++;
     }
 
+    static void run(java.nio.file.Path root) throws Exception {
+        // The client camera link keeps the pitch the spawn packet carried: Mth.unpackDegrees(packDegrees(p)).
+        var pitches = JsonParser.parseString(java.nio.file.Files.readString(root.resolve("camera-pitch.json"))).getAsJsonArray();
+        for (var entry : pitches) {
+            float pitch = entry.getAsJsonArray().get(0).getAsFloat(), sent = entry.getAsJsonArray().get(1).getAsFloat();
+            check(net.minecraft.util.Mth.unpackDegrees(net.minecraft.util.Mth.packDegrees(pitch)) == sent,
+                "rig pitch matches the client's unpacked spawn pitch at " + pitch);
+        }
+        run();
+    }
+
     static void run() throws Exception {
         check(accessor("DATA_WIDTH_ID").id() == 8 && accessor("DATA_HEIGHT_ID").id() == 9,
             "Interaction width/height metadata indices are 8/9");

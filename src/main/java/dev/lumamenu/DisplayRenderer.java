@@ -32,10 +32,13 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
+import java.util.function.UnaryOperator;
 
 final class DisplayRenderer {
     static final double NEAR_CLEARANCE = .06;
     static final float MENU_RENDER_SCALE = -65536f;
+    /** 26.3 {@code ItemDisplayContext} ids sent as ItemDisplay metadata 24. */
+    static final byte NONE_CONTEXT = 0, GUI_CONTEXT = 6;
     private static final AtomicInteger IDS = new AtomicInteger(-2_000_000);
     private final BiConsumer<Player, PacketWrapper<?>> sender;
     /** Standing 26.3 Avatar: passenger attachment at height 1.8, eye at 1.62 (both scale with the SCALE attribute). */
@@ -90,16 +93,13 @@ final class DisplayRenderer {
             Quaternionf rotation = new Quaternionf().rotationXYZ((float) Math.toRadians(v.rx()),
                 (float) Math.toRadians(v.ry()), (float) Math.toRadians(v.rz()));
             double nx, ny, nz, half = 0;
-            int lines = TextLayout.lineCount(v.content(), v.text());
             if (v.kind().equals("text")) {
                 nx = 40 / mapping.sx() * v.size() / 8;
                 ny = 40 / mapping.sy() * v.size() / 8;
                 nz = Math.min(nx, ny);
-            } else if (v.kind().equals("plane")) {
-                // The shared item model is centered, one block wide/high and has no thickness.
-                nx = v.width() / mapping.sx();
-                ny = v.height() / mapping.sy();
-                nz = Math.min(nx, ny);
+            } else if (flat(v)) {
+                double[] n = flatScale(v, mapping);
+                nx = n[0]; ny = n[1]; nz = n[2];
             } else {
                 nx = v.width() / mapping.sx();
                 ny = v.height() / mapping.sy();
@@ -120,12 +120,8 @@ final class DisplayRenderer {
             double depth = cursor / (1 + half + .002);
             cursor = depth * (1 - half - .002);
             float sx = (float) (nx * depth), sy = (float) (ny * depth), sz = (float) (nz * depth);
-            float tx = 0, ty = 0, tz = 0;
-            if (v.kind().equals("text")) {
-                // Native 26.3 TextDisplay adds +1 font pixel in X and 10 pixels per text line.
-                tx = -.025f * sx;
-                ty = -.125f * lines * sy;
-            }
+            var center = Transforms.center(v);
+            float tx = -center.x * sx, ty = -center.y * sy, tz = 0;
             var plane = mapping.cameraPlane(new Calibration.Point(v.x(), v.y()));
             raw.add(new Prepared(v, depth, depth * plane.x(), -depth * plane.y(),
                 sx, sy, sz, tx, ty, tz, rotation.x, rotation.y, rotation.z, rotation.w,
@@ -136,8 +132,20 @@ final class DisplayRenderer {
     }
 
     static Prepared prepareHit(Layouts.Visual v, Calibration.Mapping mapping) {
-        return affine(v, mapping, v.width() / mapping.sx(), v.height() / mapping.sy(),
-            Math.min(v.width() / mapping.sx(), v.height() / mapping.sy()), 1, v.id());
+        double[] n = flatScale(v, mapping);
+        return affine(v, mapping, n[0], n[1], n[2], 1, v.id());
+    }
+
+    /** Zero-thickness visuals: TextDisplay backgrounds and glyphs, and flat image models. */
+    static boolean flat(Layouts.Visual v) {
+        return v.kind().equals("plane") || v.kind().equals("glyph") || v.kind().equals("image");
+    }
+
+    /** Model scale that stretches a flat visual's local rectangle to its layout box. */
+    private static double[] flatScale(Layouts.Visual v, Calibration.Mapping mapping) {
+        var half = Transforms.halfSize(v);
+        double nx = v.width() / mapping.sx() / (2 * half.x), ny = v.height() / mapping.sy() / (2 * half.y);
+        return new double[]{nx, ny, Math.min(nx, ny)};
     }
 
     /** Model zero faces the eye ray; authored XYZ and parent shear remain relative to that basis. */
@@ -297,6 +305,39 @@ final class DisplayRenderer {
 
     private final java.util.function.Function<Player, Body> body;
     /** Images that variable-built sources may name; replaced on reload. */
+    /** A {@code plane}: a single zero-advance character, so the TextDisplay background is exactly 1x10 text pixels. */
+    private static final Component PANEL = HitSurface.space(0);
+
+    /** Text, planes and CraftEngine glyphs are TextDisplays: only their lightmap shades them, never view direction. */
+    static boolean textDisplay(Layouts.Visual v) {
+        return v.kind().equals("text") || v.kind().equals("plane") || v.kind().equals("glyph");
+    }
+    static boolean dynamicImage(Layouts.Visual v) { return v.kind().equals("image") && !v.source().isEmpty(); }
+    /** Grid icons: an item model named by a variable. */
+    static boolean dynamicItem(Layouts.Visual v) { return v.kind().equals("item") && v.itemModel().contains("{"); }
+    /** The expanded value whose change needs new metadata, or null for visuals that never change. */
+    private static String changing(Layouts.Visual v, UnaryOperator<String> variables) {
+        String value = null;
+        if (v.kind().equals("text")) value = variables.apply(v.content());
+        else if (dynamicImage(v)) value = variables.apply(v.source());
+        else if (dynamicItem(v)) value = variables.apply(v.itemModel());
+        if (v.colorSource().isEmpty() && v.fillSource().isEmpty()) return value;
+        return (value == null ? "" : value) + '\u0000' + variables.apply(v.colorSource())
+            + '\u0000' + variables.apply(v.fillSource());
+    }
+    /** A bar fill's share of its full width now; 0 hides it. */
+    static double fill(Layouts.Visual v, UnaryOperator<String> variables) {
+        if (v.fillSource().isEmpty()) return 1;
+        double value = Layouts.fraction(variables.apply(v.fillSource()));
+        return Double.isNaN(value) ? 0 : value;
+    }
+    /** The visual's color: its variable template when it has one and expands to {@code #RRGGBB}, else the fixed color. */
+    static int color(Layouts.Visual v, UnaryOperator<String> variables) {
+        if (v.colorSource().isEmpty()) return v.color();
+        String value = variables.apply(v.colorSource()).trim();
+        return value.matches("#[0-9A-Fa-f]{6}") ? Integer.parseInt(value.substring(1), 16) : v.color();
+    }
+
     private volatile ImageCatalog images = ImageCatalog.EMPTY;
     void images(ImageCatalog catalog) { images = Objects.requireNonNull(catalog); }
 
@@ -325,6 +366,12 @@ final class DisplayRenderer {
      * modifier to 1, so speed and flying no longer move the menu.
      */
     void show(Player player, List<Prepared> prepared, Map<String, String> variables, RenderMode mode, boolean down) {
+        show(player, prepared, text -> expand(text, variables), mode, down, Set.of());
+    }
+
+    /** {@code hidden}: indices of visuals whose visible-if is false; they spawn empty and keep their place. */
+    void show(Player player, List<Prepared> prepared, UnaryOperator<String> variables, RenderMode mode, boolean down,
+              Set<Integer> hidden) {
         View previous = views.get(player.getUniqueId());
         View view = new View(player, prepared, mode);
         views.put(player.getUniqueId(), view);
@@ -334,22 +381,24 @@ final class DisplayRenderer {
                 pose = Body.standing(1);
             var eye = player.getEyeLocation();
             var anchor = Camera.of(eye, down).offset(pose.riderAboveEye());
+            view.anchor = anchor;
             var spawn = new Location(eye.getX(), eye.getY() + pose.riderAboveEye(), eye.getZ(), 0, 0);
             for (int i = 0; i < prepared.size(); i++) {
                 Prepared p = prepared.get(i);
                 int id = view.ids[i];
-                EntityType type = switch (p.visual.kind()) {
-                    case "text" -> EntityTypes.TEXT_DISPLAY;
-                    default -> EntityTypes.ITEM_DISPLAY;
-                };
-                if (type == EntityTypes.TEXT_DISPLAY) view.texts[i] = expand(p.visual.content(), variables);
-                else if (!p.visual.source().isEmpty() && p.visual.kind().equals("plane"))
-                    view.texts[i] = expand(p.visual.source(), variables);
+                EntityType type = textDisplay(p.visual) ? EntityTypes.TEXT_DISPLAY : EntityTypes.ITEM_DISPLAY;
                 send(player, new WrapperPlayServerSpawnEntity(id, UUID.randomUUID(), type, spawn, 0, 0, new Vector3d(0, 0, 0)));
-                send(player, new WrapperPlayServerEntityMetadata(id, metadata(p, variables, mode, anchor, images)));
+                var data = metadata(p, variables, mode, anchor, images);
+                if (hidden.contains(i)) {
+                    view.hidden[i] = true;
+                    var blank = empty(p.visual);
+                    data.removeIf(d -> blank.stream().anyMatch(e -> e.getIndex() == d.getIndex()));
+                    data.addAll(blank);
+                } else view.texts[i] = changing(p.visual, variables);
+                send(player, new WrapperPlayServerEntityMetadata(id, data));
             }
             var feet = new Location(eye.getX(), eye.getY() - pose.eye, eye.getZ(), eye.getYaw(),
-                down ? DOWN : eye.getPitch());
+                down ? DOWN : sentPitch(eye.getPitch()));
             send(player, new WrapperPlayServerSpawnEntity(view.foot, UUID.randomUUID(), EntityTypes.INTERACTION, spawn, 0, 0, new Vector3d(0, 0, 0)));
             send(player, new WrapperPlayServerEntityMetadata(view.foot, interaction((float) -pose.height)));
             send(player, new WrapperPlayServerSpawnEntity(view.camera, UUID.randomUUID(), EntityTypes.INTERACTION, feet, 0, 0, new Vector3d(0, 0, 0)));
@@ -413,18 +462,49 @@ final class DisplayRenderer {
         // Match projected centers and keep a dark margin at every refinement size.
         double depth = .061;
         float side = size * 1.5f * (float) (depth / prepared.depth);
+        var half = Transforms.halfSize(backing);
+        float bx = side / (2 * half.x), by = side / (2 * half.y);
         Prepared background = new Prepared(backing, depth, depth * target.x(), -depth * target.y(),
-            side, side, side, 0, 0, 0, 0, 0, 0, 1, 100, 0);
+            bx, by, Math.min(bx, by), -side / 2, -side / 2, 0, 0, 0, 0, 1, 100, 0);
         show(player, List.of(background, prepared), Map.of());
     }
 
     void updateText(Player player, Map<String, String> variables) {
+        refresh(player, text -> expand(text, variables), Set.of());
+    }
+
+    /**
+     * Sends only what changed since the last presentation: visible-if switches (an entity is emptied or restored in
+     * place), text and variable-built images.
+     */
+    void refresh(Player player, UnaryOperator<String> variables, Set<Integer> hidden) {
         View view = views.get(player.getUniqueId());
         if (view == null || view.player != player) return;
         for (int i = 0; i < view.prepared.size(); i++) {
             Prepared p = view.prepared.get(i);
-            if (p.visual.kind().equals("plane") && !p.visual.source().isEmpty()) {
-                String source = expand(p.visual.source(), variables);
+            if (hidden.contains(i)) {
+                if (!view.hidden[i]) send(player, new WrapperPlayServerEntityMetadata(view.ids[i], empty(p.visual)));
+                view.hidden[i] = true;
+                view.texts[i] = null;
+                continue;
+            }
+            if (view.hidden[i]) {
+                view.hidden[i] = false;
+                send(player, new WrapperPlayServerEntityMetadata(view.ids[i],
+                    metadata(p, variables, view.mode, view.anchor, images)));
+                view.texts[i] = changing(p.visual, variables);
+                continue;
+            }
+            if (dynamicItem(p.visual) || !p.visual.colorSource().isEmpty() || !p.visual.fillSource().isEmpty()) {
+                String value = changing(p.visual, variables);
+                if (value.equals(view.texts[i])) continue;
+                send(player, new WrapperPlayServerEntityMetadata(view.ids[i],
+                    metadata(p, variables, view.mode, view.anchor, images)));
+                view.texts[i] = value;
+                continue;
+            }
+            if (dynamicImage(p.visual)) {
+                String source = variables.apply(p.visual.source());
                 if (source.equals(view.texts[i])) continue;
                 var image = image(p, variables, view.mode, images);
                 send(player, new WrapperPlayServerEntityMetadata(view.ids[i], List.of(
@@ -434,12 +514,37 @@ final class DisplayRenderer {
                 continue;
             }
             if (!p.visual.kind().equals("text")) continue;
-            String text = expand(p.visual.content(), variables);
+            String text = variables.apply(p.visual.content());
             if (text.equals(view.texts[i])) continue;
             send(player, new WrapperPlayServerEntityMetadata(view.ids[i],
                 List.of(new EntityData<>(23, EntityDataTypes.ADV_COMPONENT, content(p.visual, variables)))));
             view.texts[i] = text;
         }
+    }
+
+    /**
+     * Switches the shown page to another placement of the same visuals (variable offsets): displays whose pose changed
+     * get new metadata in place, nothing respawns; then the usual refresh.
+     */
+    void move(Player player, List<Prepared> prepared, UnaryOperator<String> variables, Set<Integer> hidden) {
+        View view = views.get(player.getUniqueId());
+        if (view == null || view.player != player) return;
+        if (prepared.size() != view.prepared.size()) throw new IllegalArgumentException("移动后的显示数量不一致");
+        if (prepared != view.prepared) {
+            for (int i = 0; i < prepared.size(); i++) {
+                Prepared next = prepared.get(i);
+                if (next.equals(view.prepared.get(i))) continue;
+                if (!next.visual.id().equals(view.prepared.get(i).visual.id()))
+                    throw new IllegalArgumentException("移动后的显示顺序不一致");
+                if (!view.hidden[i] && !hidden.contains(i)) {
+                    send(player, new WrapperPlayServerEntityMetadata(view.ids[i],
+                        metadata(next, variables, view.mode, view.anchor, images)));
+                    view.texts[i] = changing(next.visual, variables);
+                }
+            }
+            view.prepared = prepared;
+        }
+        refresh(player, variables, hidden);
     }
 
     void close(Player player) {
@@ -470,16 +575,16 @@ final class DisplayRenderer {
 
     /** A variable-built image: the named catalog image fitted into the authored box, or nothing when unknown. */
     record Dynamic(Vector3f scale, ItemStack stack) {}
-    static Dynamic image(Prepared p, Map<String, String> variables, RenderMode mode, ImageCatalog catalog) {
+    static Dynamic image(Prepared p, UnaryOperator<String> variables, RenderMode mode, ImageCatalog catalog) {
         float scale = mode == RenderMode.ENHANCED ? MENU_RENDER_SCALE : 1;
         var v = p.visual;
-        var image = catalog.find(expand(v.source(), variables));
+        var image = catalog.find(variables.apply(v.source()));
         if (image == null) return new Dynamic(new Vector3f(p.sx * scale, p.sy * scale, p.sz * scale), ItemStack.EMPTY);
         double fx = 1, fy = 1;
         if (v.width() / v.height() > image.aspect()) fx = v.height() * image.aspect() / v.width();
         else fy = v.width() / image.aspect() / v.height();
         return new Dynamic(new Vector3f((float) (p.sx * fx) * scale, (float) (p.sy * fy) * scale, p.sz * scale),
-            planeStack(image.model(), v.color()));
+            planeStack(image.model(), color(v, variables)));
     }
     private static ItemStack planeStack(String model, int color) {
         return ItemStack.builder().type(ItemTypes.PAPER).amount(1)
@@ -489,27 +594,33 @@ final class DisplayRenderer {
             .build();
     }
 
-    private static List<EntityData<?>> metadata(Prepared p, Map<String, String> variables, RenderMode mode,
+    private static List<EntityData<?>> metadata(Prepared p, UnaryOperator<String> variables, RenderMode mode,
                                                 org.joml.Vector3d anchor, ImageCatalog catalog) {
         boolean enhanced = mode == RenderMode.ENHANCED;
         float scale = enhanced ? MENU_RENDER_SCALE : 1;
+        CraftEngineImages.Glyph glyph = p.visual.glyph();
         Vector3f translation = translation(p, mode, anchor);
-        Dynamic dynamic = p.visual.kind().equals("plane") && !p.visual.source().isEmpty()
-            ? image(p, variables, mode, catalog) : null;
+        Dynamic dynamic = dynamicImage(p.visual) ? image(p, variables, mode, catalog) : null;
+        // A plane spans its local x from 0, so narrowing it keeps the left edge where it was.
+        double share = fill(p.visual, variables);
         List<EntityData<?>> data = new ArrayList<>(List.of(
             new EntityData<>(10, EntityDataTypes.INT, 0),
             new EntityData<>(11, EntityDataTypes.VECTOR3F, translation),
             new EntityData<>(12, EntityDataTypes.VECTOR3F, dynamic != null ? dynamic.scale()
-                : new Vector3f(p.sx * scale, p.sy * scale, p.sz * scale)),
+                : new Vector3f((float) (p.sx * scale * Math.max(share, 1e-4)), p.sy * scale, p.sz * scale)),
             new EntityData<>(13, EntityDataTypes.QUATERNION, new Quaternion4f(p.qx, p.qy, p.qz, p.qw)),
             new EntityData<>(15, EntityDataTypes.BYTE, (byte) 3),
             new EntityData<>(16, EntityDataTypes.INT, (15 << 4) | (15 << 20)),
             new EntityData<>(18, EntityDataTypes.FLOAT, 0f),
             new EntityData<>(20, EntityDataTypes.FLOAT, 0f),
             new EntityData<>(21, EntityDataTypes.FLOAT, 0f)));
-        if (p.rqx != 0 || p.rqy != 0 || p.rqz != 0 || p.rqw != 1)
-            data.add(new EntityData<>(14, EntityDataTypes.QUATERNION, new Quaternion4f(p.rqx, p.rqy, p.rqz, p.rqw)));
         Layouts.Visual v = p.visual;
+        if (v.inventoryPose()) {
+            // ItemDisplay turns the item 180 degrees about Y after our transformation; undo it so the GUI pose faces us.
+            var right = new Quaternionf(p.rqx, p.rqy, p.rqz, p.rqw).rotateY((float) Math.PI);
+            data.add(new EntityData<>(14, EntityDataTypes.QUATERNION, new Quaternion4f(right.x, right.y, right.z, right.w)));
+        } else if (p.rqx != 0 || p.rqy != 0 || p.rqz != 0 || p.rqw != 1)
+            data.add(new EntityData<>(14, EntityDataTypes.QUATERNION, new Quaternion4f(p.rqx, p.rqy, p.rqz, p.rqw)));
         switch (v.kind()) {
             case "text" -> {
                 data.add(new EntityData<>(23, EntityDataTypes.ADV_COMPONENT, content(v, variables)));
@@ -518,46 +629,74 @@ final class DisplayRenderer {
                 data.add(new EntityData<>(26, EntityDataTypes.BYTE, (byte) v.text().opacity()));
                 data.add(new EntityData<>(27, EntityDataTypes.BYTE, v.text().flags()));
             }
+            // One zero-advance character whose opaque background is the whole visual (1x10 text pixels).
+            case "plane" -> {
+                data.add(new EntityData<>(23, EntityDataTypes.ADV_COMPONENT, PANEL));
+                data.add(new EntityData<>(24, EntityDataTypes.INT, p.lineWidth));
+                data.add(new EntityData<>(25, EntityDataTypes.INT, share <= 0 ? 0 : 0xFF000000 | color(v, variables)));
+            }
+            case "glyph" -> {
+                data.add(new EntityData<>(23, EntityDataTypes.ADV_COMPONENT, glyph == null ? Component.empty()
+                    : Component.text(v.content())
+                        .font(net.kyori.adventure.key.Key.key(glyph.font())).color(TextColor.color(color(v, variables)))));
+                data.add(new EntityData<>(24, EntityDataTypes.INT, p.lineWidth));
+                data.add(new EntityData<>(25, EntityDataTypes.INT, 0));
+            }
             default -> {
-                boolean plane = v.kind().equals("plane");
                 ItemStack item;
                 if (dynamic != null) item = dynamic.stack();
-                else if (plane) item = planeStack(v.itemModel().isEmpty() ? "lumamenu:plane" : v.itemModel(), v.color());
-                else {
+                else if (v.kind().equals("image")) item = planeStack(v.itemModel(), color(v, variables));
+                else if (dynamicItem(v)) {
+                    String model = variables.apply(v.itemModel());
+                    item = !model.matches("[a-z0-9_.-]+:[a-z0-9/._-]+") ? ItemStack.EMPTY
+                        : ItemStack.builder().type(ItemTypes.PAPER).amount(1)
+                        .component(ComponentTypes.ITEM_MODEL, new ItemModel(new ResourceLocation(model))).build();
+                } else {
                     var stack = ItemStack.builder().type(ItemTypes.getByName(v.source())).amount(1);
                     if (!v.itemModel().isEmpty())
                         stack.component(ComponentTypes.ITEM_MODEL, new ItemModel(new ResourceLocation(v.itemModel())));
                     item = stack.build();
                 }
                 data.add(new EntityData<>(23, EntityDataTypes.ITEMSTACK, item));
-                data.add(new EntityData<>(24, EntityDataTypes.BYTE, (byte) 0));
+                data.add(new EntityData<>(24, EntityDataTypes.BYTE, v.inventoryPose() ? GUI_CONTEXT : NONE_CONTEXT));
             }
         }
         return data;
+    }
+
+    /** What a hidden visual shows: no text, no background, no item. */
+    private static List<EntityData<?>> empty(Layouts.Visual v) {
+        if (!textDisplay(v)) return List.of(new EntityData<>(23, EntityDataTypes.ITEMSTACK, ItemStack.EMPTY));
+        return List.of(new EntityData<>(23, EntityDataTypes.ADV_COMPONENT, Component.empty()),
+            new EntityData<>(25, EntityDataTypes.INT, 0));
     }
 
     static String expand(String text, Map<String, String> variables) {
         for (var entry : variables.entrySet()) text = text.replace("{" + entry.getKey() + "}", entry.getValue());
         return text;
     }
-    private static Component content(Layouts.Visual v, Map<String, String> variables) {
-        return TextLayout.component(expand(v.content(), variables), v.color(), v.text());
+    private static Component content(Layouts.Visual v, UnaryOperator<String> variables) {
+        return TextLayout.component(variables.apply(v.content()), color(v, variables), v.text());
     }
 
     private static final class View {
         final Player player;
-        final List<Prepared> prepared;
+        /** Replaced in place by {@link #move}: same visuals in the same order, possibly at new positions. */
+        List<Prepared> prepared;
         final int[] ids;
         final String[] texts;
         /** Camera rig: {@code foot} rides the viewer, {@code camera} rides {@code foot}. */
         final int foot = IDS.decrementAndGet(), camera = IDS.decrementAndGet();
         final RenderMode mode;
+        final boolean[] hidden;
+        org.joml.Vector3d anchor;
         View(Player player, List<Prepared> prepared, RenderMode mode) {
             this.player = player;
             this.prepared = prepared;
             this.mode = mode;
             ids = new int[prepared.size()];
             texts = new String[prepared.size()];
+            hidden = new boolean[prepared.size()];
             for (int i = 0; i < ids.length; i++) ids[i] = IDS.decrementAndGet();
         }
         int[] mounted() {
@@ -573,10 +712,21 @@ final class DisplayRenderer {
         }
     }
 
+    /**
+     * The pitch the client gives the spawned camera link: spawn packets carry angles in 1/256 turns, rounded down
+     * (PacketEvents {@code writeRotation}, vanilla {@code Mth.unpackDegrees}). The rider point sits 0.18 above the
+     * eye, so assuming the unrounded pitch (up to 1.4° off) would misplace every display by up to 4 mm along the view
+     * axis, scaling the whole menu by several percent.
+     */
+    static float sentPitch(float degrees) {
+        int packed = (byte) (int) Math.floor(degrees * 256.0f / 360.0f);
+        return (float) (packed * 360) / 256.0f;
+    }
+
     record Camera(double sp, double cp) {
         /** Looked-down pages point the camera rig straight down; the player's own view is never touched. */
         static Camera of(org.bukkit.Location eye, boolean down) {
-            double pitch = Math.toRadians(down ? DOWN : eye.getPitch());
+            double pitch = Math.toRadians(down ? DOWN : sentPitch(eye.getPitch()));
             return new Camera(Math.sin(pitch), Math.cos(pitch));
         }
         /** Passenger point {@code above} the eye, in the camera-centered billboard frame (right, up, toward the eye). */

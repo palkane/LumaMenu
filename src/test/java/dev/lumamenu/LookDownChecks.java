@@ -104,7 +104,7 @@ final class LookDownChecks {
         pages.putAll(Layouts.load(Path.of("src/main/resources/layouts")));
         var state = MenuCache.compile(pages, List.of(mapping), 2);
         check(state.lookDownProfiles().keySet().equals(Set.of(mapping.key()))
-            && state.lookDownProfiles().get(mapping.key()).prepared().keySet().equals(Set.of("steer", "demo", "detail")),
+            && state.lookDownProfiles().get(mapping.key()).prepared().keySet().equals(Set.of("steer", "demo", "transforms")),
             "flattened profiles exist only for look-down pages");
         check(state.prepared(mapping, "coordinates", RenderMode.COMPATIBLE, true)
                 .equals(state.prepared(mapping, "coordinates", RenderMode.COMPATIBLE, false))
@@ -137,7 +137,8 @@ final class LookDownChecks {
                 check(s.depth() - s.halfDepth() >= DisplayRenderer.NEAR_CLEARANCE - 1e-9,
                     "flattened bounds stay beyond the near clearance");
                 if (!Set.of("item", "block").contains(s.visual().kind())) {
-                    check(Math.abs(s.sx() / s.depth() - p.sx() / p.depth()) < 1e-6
+                    double size = p.sx() / p.depth();
+                    check(Math.abs(s.sx() / s.depth() - size) < 1e-6 * Math.max(1, size)
                         && Math.abs(s.side() / s.depth() - p.side() / p.depth()) < 1e-9
                         && Math.abs(s.up() / s.depth() - p.up() / p.depth()) < 1e-9,
                         "planes and text keep their screen size and position");

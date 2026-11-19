@@ -71,7 +71,30 @@ public final class NativeHitChecks {
         }
         fonts.put("lumamenu:" + name, glyphs);
     }
-    private static Font font() {
+    /**
+     * Registers a CraftEngine-style bitmap font provider under {@code font}; returns each glyph's real 26.3 quad
+     * (left, right, top, bottom in text pixels from the pen position).
+     */
+    static Map<Integer, float[]> bitmap(Path pack, String font, JsonObject definition) throws Exception {
+        var decoded = BitmapProvider.Definition.CODEC.codec().parse(JsonOps.INSTANCE, definition).getOrThrow();
+        var provider = decoded.unpack().left().orElseThrow().load(manager(pack));
+        providers.add(provider);
+        Map<Integer, float[]> quads = new HashMap<>();
+        var glyphs = fonts.computeIfAbsent(font, key -> new HashMap<>());
+        for (int code : provider.getSupportedGlyphs()) {
+            var glyph = provider.getGlyph(code);
+            glyphs.put(code, bake(glyph));
+            glyph.bake(new UnbakedGlyph.Stitcher() {
+                public BakedGlyph stitch(GlyphInfo info, GlyphBitmap bitmap) {
+                    quads.put(code, new float[]{bitmap.getLeft(), bitmap.getRight(), bitmap.getTop(), bitmap.getBottom()});
+                    return null;
+                }
+                public BakedGlyph getMissing() { throw new AssertionError("missing glyph"); }
+            });
+        }
+        return quads;
+    }
+    static Font font() {
         return new Font(new Font.Provider() {
             public GlyphSource glyphs(FontDescription description) {
                 String id = ((FontDescription.Resource) description).id().toString();
@@ -97,6 +120,8 @@ public final class NativeHitChecks {
         int originX = json.get("originX").getAsInt(), originY = json.get("originY").getAsInt();
         int rowsExpected = json.get("rows").getAsInt(), advance = json.get("advance").getAsInt();
         int bodyWidth = json.get("bodyWidth").getAsInt();
+        // Lift fixtures start that many units above the first hit row; there overlapping glyphs resolve last-wins.
+        int lift = json.has("lift") ? json.get("lift").getAsInt() : 0, shift = 6 - lift;
         var component = ComponentSerialization.CODEC.parse(JsonOps.INSTANCE, json.get("body")).getOrThrow();
         {
             var common = new net.minecraft.server.dialog.CommonDialogData(Component.literal(" "), Optional.empty(),
@@ -183,13 +208,13 @@ public final class NativeHitChecks {
         }
         String[][] actual = new String[height][width], expected = new String[height][width];
         for (var area : areas) {
-            for (int y = Math.max(0, (int) Math.floor(area.activeTop()) - 6);
-                 y < Math.min(height, (int) Math.ceil(area.activeBottom()) - 6); y++)
+            for (int y = Math.max(0, (int) Math.floor(area.activeTop()) - shift);
+                 y < Math.min(height, (int) Math.ceil(area.activeBottom()) - shift); y++)
                 for (int x = Math.max(0, (int) Math.floor(area.activeLeft()));
                      x < Math.min(width, (int) Math.ceil(area.activeRight())); x++)
-                    if (net.minecraft.client.gui.ActiveTextCollector.isPointInRectangle(x + .5f, y + 6.5f,
+                    if (net.minecraft.client.gui.ActiveTextCollector.isPointInRectangle(x + .5f, y + shift + .5f,
                             area.activeLeft(), area.activeTop(), area.activeRight(), area.activeBottom())) {
-                        if (actual[y][x] != null && !actual[y][x].equals(action(area.style())))
+                        if (lift == 0 && actual[y][x] != null && !actual[y][x].equals(action(area.style())))
                             throw new AssertionError(path + " overlapping callbacks " + x + "," + y);
                         actual[y][x] = action(area.style());
                     }
@@ -205,9 +230,9 @@ public final class NativeHitChecks {
             // The tinted overlay must paint exactly the pixels that carry a menu callback (not the corner "×").
             boolean[][] painted = new boolean[height][width];
             for (var glyph : overlay)
-                for (int y = Math.max(0, (int) Math.floor(glyph.top()) - 6); y < Math.min(height, (int) Math.ceil(glyph.bottom()) - 6); y++)
+                for (int y = Math.max(0, (int) Math.floor(glyph.top()) - shift); y < Math.min(height, (int) Math.ceil(glyph.bottom()) - shift); y++)
                     for (int x = Math.max(0, (int) Math.floor(glyph.left())); x < Math.min(width, (int) Math.ceil(glyph.right())); x++)
-                        if (x + .5f > glyph.left() && x + .5f < glyph.right() && y + 6.5f > glyph.top() && y + 6.5f < glyph.bottom())
+                        if (x + .5f > glyph.left() && x + .5f < glyph.right() && y + shift + .5f > glyph.top() && y + shift + .5f < glyph.bottom())
                             painted[y][x] = true;
             String close = json.has("close") ? json.get("close").getAsString() : null;
             for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
@@ -230,11 +255,68 @@ public final class NativeHitChecks {
         for (var entry : json.getAsJsonArray("boxes")) {
             var box = entry.getAsJsonObject();
             Set<String> found = new HashSet<>();
-            Consumer<Style> consumer = style -> { if (action(style) != null) found.add(action(style)); };
+            String[] last = {null};
+            Consumer<Style> consumer = style -> { if (action(style) != null) { found.add(action(style)); last[0] = action(style); } };
             var visitor = (Font.GlyphVisitor) ctor.newInstance(box.get("x").getAsFloat() - originX + .5f,
-                box.get("y").getAsFloat() - originY + 6.5f, consumer);
+                box.get("y").getAsFloat() - originY + shift + .5f, consumer);
             prepared.forEach(text -> text.visit(visitor));
-            check(found.equals(Set.of(box.get("id").getAsString())), path + " actual visitor chooses intended action");
+            check(lift == 0 ? found.equals(Set.of(box.get("id").getAsString())) : box.get("id").getAsString().equals(last[0]),
+                path + " actual visitor chooses intended action");
+        }
+        if (json.has("absolute")) {
+            // The calibration probe is 462 wide: a body of the same width shares its X on every screen width.
+            var probe = DialogGeometry.rows(16);
+            var narrowBody = ComponentSerialization.CODEC.parse(JsonOps.INSTANCE, json.get("narrow")).getOrThrow();
+            int narrowWidth = json.get("narrowWidth").getAsInt(), shifted = 0;
+            for (int screenWidth = 400; screenWidth <= 700; screenWidth++) {
+                int probeX = DialogGeometry.measure(probe, font, 462, DialogGeometry.Mode.CORNER, screenWidth, 252).bodyX();
+                check(DialogGeometry.measure(component, font, bodyWidth, DialogGeometry.Mode.CORNER, screenWidth, 252).bodyX() == probeX,
+                    path + " padded body shares the probe's X on a " + screenWidth + "-wide screen");
+                var narrow = DialogGeometry.measure(narrowBody, font, narrowWidth, DialogGeometry.Mode.CORNER, screenWidth, 252);
+                if (narrow.bodyX() != probeX + (462 - narrowWidth) / 2) shifted++;
+            }
+            check(shifted > 0, path + " fault control: the narrower body drifts from the probe on some screen widths");
+            // Real clicks at absolute screen positions on the user's 480x252 GUI.
+            int screenHeight = json.get("screen").getAsInt();
+            var layout = DialogGeometry.measure(component, font, bodyWidth, DialogGeometry.Mode.CORNER, 480, screenHeight);
+            var narrowLayout = DialogGeometry.measure(narrowBody, font, narrowWidth, DialogGeometry.Mode.CORNER, 480, screenHeight);
+            int clicked = 0, narrowMisses = 0;
+            for (var entry : json.getAsJsonArray("boxes")) {
+                var box = entry.getAsJsonObject();
+                float gx = layout.bodyX() + 4 + box.get("x").getAsInt() + .5f;
+                float gy = layout.bodyY() + 10 + box.get("y").getAsInt() - originY + .5f;
+                var sent = NativeDialogChecks.click(component, font, bodyWidth, 480, screenHeight, gx, gy, true);
+                check(sent.size() == 1 && sent.getFirst().toString().equals(box.get("id").getAsString()),
+                    path + " absolute screen click lands on " + box);
+                float right = layout.bodyX() + 4 + box.get("x").getAsInt() + box.get("width").getAsInt() - .5f;
+                check(NativeDialogChecks.click(component, font, bodyWidth, 480, screenHeight, right, gy, true)
+                    .equals(sent), path + " absolute screen click lands on the right edge of " + box);
+                var missed = NativeDialogChecks.click(narrowBody, font, narrowWidth, 480, screenHeight, right, gy, true);
+                if (!(missed.size() == 1 && missed.getFirst().toString().equals(box.get("id").getAsString()))) narrowMisses++;
+                clicked++;
+            }
+            check(clicked > 0 && narrowMisses > 0, path + " fault control: the narrower body misses some of the same clicks");
+            System.out.println(path.getFileName() + " absolute clicks " + clicked + "; narrower body shifted on "
+                + shifted + " screen widths and missed " + narrowMisses + " clicks at 480 wide (probe X "
+                + layout.bodyX() + ", narrow X " + narrowLayout.bodyX() + ")");
+        }
+        if (lift > 0 && !debug) {
+            // Through the real screen: clicks in the widget's top margin reach the lifted areas.
+            int screenHeight = json.get("screen").getAsInt(), clicked = 0;
+            for (var entry : json.getAsJsonArray("boxes")) {
+                var box = entry.getAsJsonObject();
+                int y = box.get("y").getAsInt() - originY;
+                if (y > lift || box.get("id").getAsString().equals(json.get("close").getAsString())) continue;
+                // The body line is centred in the widget, inside its 4-unit padding.
+                float left = (bodyWidth - advance) / 2f;
+                var sent = NativeDialogChecks.click(component, font, bodyWidth, 480, screenHeight,
+                    left + box.get("x").getAsInt() - originX + .5f, y + .5f);
+                check(sent.size() == 1 && sent.getFirst().toString().equals(box.get("id").getAsString()),
+                    path + " real screen click in the lift band at " + box + " sent " + sent);
+                clicked++;
+            }
+            check(clicked > 0, path + " lift band clicks exercised");
+            System.out.println(path.getFileName() + " real lift-band screen clicks: " + clicked);
         }
         System.out.println("PASS " + path.getFileName() + " regions=" + json.getAsJsonArray("boxes").size());
     }
@@ -281,9 +363,10 @@ public final class NativeHitChecks {
             models(pack);
             NativePlaneChecks.run(root);
             NativeModeChecks.run(root);
-            NativeCameraRigChecks.run();
+            NativeCameraRigChecks.run(root);
             NativeImageChecks.run(root);
             TextLayoutChecks.run(root);
+            NativeFrameChecks.run(root, font());
             try (var fixtures = Files.list(root.resolve("fixtures"))) {
                 for (Path path : fixtures.sorted().toList()) fixture(font(), path);
             }
@@ -292,7 +375,8 @@ public final class NativeHitChecks {
             try { fixture(font(), root.resolve("fixtures/adjacent-single-units.json")); }
             catch (AssertionError expected) { caught = true; }
             check(caught, "fault control: whole-line glyph height must break actual one-unit hit checks");
-            System.out.println("Native26.3 checks passed: " + (checks + NativeDialogChecks.checks()) + "; exact GUI pixels checked: " + pixels
+            System.out.println("Native26.3 checks passed: " + (checks + NativeDialogChecks.checks() + NativeFrameChecks.checks())
+                + "; exact GUI pixels checked: " + pixels
                 + "; text layout " + TextLayoutChecks.checks + "; fault control rejected; no GPU/client interaction.");
         } finally {
             for (var provider : providers) provider.close();

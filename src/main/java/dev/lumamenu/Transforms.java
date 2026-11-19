@@ -30,16 +30,29 @@ final class Transforms {
         return result;
     }
 
+    /** One text pixel of an unscaled TextDisplay, in blocks. */
+    static final float TEXT_PIXEL = .025f;
+
+    /**
+     * Local model centre. A TextDisplay draws in text pixels shifted by {@code 1 - width/2} and lifted by its line
+     * height; a {@code plane} is the background of one zero-advance character: 1x10 pixels from the origin.
+     */
     static Vector3f center(Layouts.Visual v) {
         return switch (v.kind()) {
-            case "text" -> new Vector3f(.025f, .125f * TextLayout.lineCount(v.content(), v.text()), 0);
+            case "text" -> new Vector3f(TEXT_PIXEL, .125f * TextLayout.lineCount(v.content(), v.text()), 0);
+            case "plane" -> new Vector3f(TEXT_PIXEL / 2, .125f, 0);
+            case "glyph" -> new Vector3f((float) ((v.glyph().left() + v.glyph().right()) / 2 * TEXT_PIXEL),
+                (float) ((v.glyph().bottom() + v.glyph().top()) / 2 * TEXT_PIXEL), 0);
             default -> new Vector3f();
         };
     }
 
     static Vector3f halfSize(Layouts.Visual v) {
         return switch (v.kind()) {
-            case "plane" -> new Vector3f(.5f, .5f, 0);
+            case "plane" -> new Vector3f(TEXT_PIXEL / 2, .125f, 0);
+            case "glyph" -> new Vector3f((float) ((v.glyph().right() - v.glyph().left()) / 2 * TEXT_PIXEL),
+                (float) ((v.glyph().top() - v.glyph().bottom()) / 2 * TEXT_PIXEL), 0);
+            case "image" -> new Vector3f(.5f, .5f, 0);
             case "text" -> new Vector3f((float) (v.width() / (10 * v.size())),
                 (float) (v.height() / (10 * v.size())), 0);
             default -> new Vector3f((float) v.bx() / 2, (float) v.by() / 2, (float) v.bz() / 2);

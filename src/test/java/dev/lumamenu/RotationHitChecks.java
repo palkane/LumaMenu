@@ -37,6 +37,13 @@ final class RotationHitChecks {
     static void run(Path output) throws Exception {
         check(LumaMenuPlugin.readSettings(new YamlConfiguration()).rotationHitStep() == 2, "default step is 2");
         for (Object invalid : List.of(0, 3, 32, -1, 2.5, "4", true)) rejects(invalid);
+        check(LumaMenuPlugin.readSettings(new YamlConfiguration()).calibrateOnJoin(), "join calibration defaults on");
+        var joinOff = new YamlConfiguration();
+        joinOff.set("calibrate-on-join", false);
+        check(!LumaMenuPlugin.readSettings(joinOff).calibrateOnJoin(), "join calibration can be turned off");
+        joinOff.set("calibrate-on-join", "yes");
+        try { LumaMenuPlugin.readSettings(joinOff); throw new AssertionError("non-boolean calibrate-on-join accepted"); }
+        catch (IllegalArgumentException expected) { checks++; }
         JsonArray sizes = new JsonArray(), fixtures = new JsonArray();
         for (var mapping : List.of(new Calibration.Mapping(200, 200, 226, 90),
                                   new Calibration.Mapping(310, 170, 205, 82))) {

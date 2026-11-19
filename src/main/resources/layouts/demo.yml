@@ -1,6 +1,5 @@
 schema-version: 3
 id: demo
-look-down: true
 # Hit area 344x126, centred in the Dialog body. The panel and title reach a little beyond it, but stay
 # clear of the top HUD and of the experience bar (about 33 below this canvas on small GUI heights).
 canvas: {width: 344, height: 126}

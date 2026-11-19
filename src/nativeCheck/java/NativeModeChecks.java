@@ -44,7 +44,9 @@ final class NativeModeChecks {
                     var visual = p.getAsJsonObject("visual");
                     String kind = visual.get("kind").getAsString();
                     float cx = 0, cyLocal = 0, cz = 0, hx, hy, hz;
-                    if (kind.equals("plane")) { hx = .5f; hy = .5f; hz = 0; }
+                    // A plane is the 1x10 text-pixel background of one zero-advance character.
+                    if (kind.equals("plane")) { cx = .0125f; cyLocal = .125f; hx = .0125f; hy = .125f; hz = 0; }
+                    else if (kind.equals("image")) { hx = .5f; hy = .5f; hz = 0; }
                     else if (kind.equals("text")) {
                         cx = .025f;
                         cyLocal = .125f * (visual.get("content").getAsString().split("\n", -1).length);
@@ -90,7 +92,8 @@ final class NativeModeChecks {
         float maximum = 0;
         for (float yaw : new float[]{-180, -73, 0, 52, 179})
             for (float pitch : new float[]{-90, -35, 0, 47, 90}) {
-                state.cameraYRot = yaw; state.cameraXRot = pitch;
+                // The camera link keeps the pitch its spawn packet carried (1/256 turns, rounded down).
+                state.cameraYRot = yaw; state.cameraXRot = net.minecraft.util.Mth.unpackDegrees(net.minecraft.util.Mth.packDegrees(pitch));
                 var billboard = (Quaternionf) orientation.invoke(renderer, render, state, new Quaternionf());
                 for (var entry : fixtures) {
                     var p = entry.getAsJsonObject();
@@ -101,6 +104,9 @@ final class NativeModeChecks {
                     pose.mulPose(new Transformation(pitchTranslation(p, pitch), left,
                         vector(p, "encodedScale"), right));
                     var visual = p.getAsJsonObject("visual");
+                    // ItemDisplayRenderer.submitInner turns the item half a turn about Y; inventory-pose items undo it.
+                    if (visual.has("inventoryPose") && visual.get("inventoryPose").getAsBoolean())
+                        pose.rotate(com.mojang.math.Axis.YP, (float) Math.PI);
                     float c = 0;
                     if (n(visual, "rx") == 0 && n(visual, "ry") == 0 && n(visual, "rz") == 0
                         && visual.getAsJsonArray("transforms").isEmpty()) {
@@ -172,6 +178,8 @@ final class NativeModeChecks {
                 var left = quaternion(p, "encodedLeft");
                 var right = p.has("encodedRight") ? quaternion(p, "encodedRight") : new Quaternionf();
                 pose.mulPose(new Transformation(vector(p, "encodedTranslation"), left, vector(p, "encodedScale"), right));
+                if (visual.has("inventoryPose") && visual.get("inventoryPose").getAsBoolean())
+                    pose.rotate(com.mojang.math.Axis.YP, (float) Math.PI);
                 var expected = new Quaternionf(f(p, "rqx"), f(p, "rqy"), f(p, "rqz"), f(p, "rqw"))
                     .transform(new Vector3f()).mul(f(p, "sx"), f(p, "sy"), f(p, "sz"));
                 new Quaternionf(f(p, "qx"), f(p, "qy"), f(p, "qz"), f(p, "qw")).transform(expected)

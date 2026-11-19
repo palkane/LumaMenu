@@ -41,6 +41,12 @@ final class HitGeometry {
 
     static Surface compile(Layouts.Page page, Calibration.Mapping mapping,
                            List<DisplayRenderer.Prepared> prepared, int step, RenderMode mode) {
+        return compile(page, mapping, prepared, step, mode, Set.of());
+    }
+
+    /** {@code hidden}: controls whose visible-if is false; the controls beneath them take their area. */
+    static Surface compile(Layouts.Page page, Calibration.Mapping mapping,
+                           List<DisplayRenderer.Prepared> prepared, int step, RenderMode mode, Set<Integer> hidden) {
         Map<String, DisplayRenderer.Prepared> models = new HashMap<>();
         for (var p : prepared)
             if (Set.of("item", "block").contains(p.visual().kind()))
@@ -48,6 +54,7 @@ final class HitGeometry {
         Map<Integer, Path2D.Double> outlines = new HashMap<>();
         Map<Integer, Integer> precision = new HashMap<>();
         for (int i = 0; i < page.controls().size(); i++) {
+            if (hidden.contains(i)) continue;
             var c = page.controls().get(i);
             boolean geometry = c.geometry() != null && transformed(c.geometry());
             var p = geometry ? DisplayRenderer.prepareHit(c.geometry(), mapping) : models.get(c.id());
@@ -57,12 +64,12 @@ final class HitGeometry {
                 precision.put(i, rotated(p.visual()) ? step : 1);
             }
         }
-        if (outlines.isEmpty()) return original(page);
+        if (outlines.isEmpty() && hidden.isEmpty()) return original(page);
         var regions = Layouts.resolve(page.controls(), page.surfaceWidth(), page.surfaceHeight(),
-            page.surfaceOriginX(), page.surfaceOriginY(), outlines, step, precision);
+            page.surfaceOriginX(), page.surfaceOriginY(), outlines, step, precision, hidden);
         return new Surface(regions, HitSurface.compile(regions, page.surfaceOriginX(), page.surfaceOriginY(),
             page.surfaceRows()), HitSurface.chrome(regions, page.surfaceOriginX(), page.surfaceOriginY(),
-            page.surfaceWidth(), page.surfaceRows()));
+            page.surfaceWidth(), page.surfaceRows(), page.chrome().row()));
     }
 
     static Path2D.Double outline(DisplayRenderer.Prepared p, Calibration.Mapping mapping) {

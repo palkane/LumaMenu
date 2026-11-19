@@ -45,6 +45,14 @@ final class MenuResources {
                     "height", height, "ascent", 1 - top,
                     "chars", List.of(Character.toString(HitSurface.glyph(top, height)))));
         }
+        // Lift glyphs: from `top` (−10..−1) above a body's first hit row down to its first pixel; a bitmap's ascent may
+        // not exceed its height, so they cannot stop higher (see HitSurface.lift).
+        for (int top = -HitSurface.LIFT; top < 0; top++) {
+            String texture = "generated/hit_lift_" + (1 - top) + ".png";
+            png(pack, "assets/lumamenu/textures/" + texture, new BufferedImage(1, 1 - top, BufferedImage.TYPE_INT_ARGB));
+            providers.add(Map.of("type", "bitmap", "file", "lumamenu:" + texture,
+                "height", 1 - top, "ascent", 1 - top, "chars", List.of(Character.toString(HitSurface.liftGlyph(top)))));
+        }
         json(pack, "assets/lumamenu/font/hit.json", Map.of("providers", providers));
         // Debug overlay: visible glyphs at the hit glyphs' heights and ascents, plus a -1 step (see HitSurface).
         List<Object> debugProviders = new ArrayList<>();
@@ -57,6 +65,15 @@ final class MenuResources {
                 debugProviders.add(Map.of("type", "bitmap", "file", "lumamenu:" + texture,
                     "height", height, "ascent", 1 - top,
                     "chars", List.of(Character.toString(HitSurface.debugGlyph(top, height)))));
+        }
+        for (int top = -HitSurface.LIFT; top < 0; top++) {
+            String texture = "generated/hit_debug_lift_" + (1 - top) + ".png";
+            BufferedImage visible = new BufferedImage(1, 1 - top, BufferedImage.TYPE_INT_ARGB);
+            for (int y = 0; y < 1 - top; y++) visible.setRGB(0, y, DEBUG_ARGB);
+            png(pack, "assets/lumamenu/textures/" + texture, visible);
+            debugProviders.add(Map.of("type", "bitmap", "file", "lumamenu:" + texture,
+                "height", 1 - top, "ascent", 1 - top,
+                "chars", List.of(Character.toString(HitSurface.debugLiftGlyph(top)))));
         }
         debugProviders.add(Map.of("type", "space", "advances", Map.of(HitSurface.DEBUG_BACK, -1)));
         json(pack, "assets/lumamenu/font/hit_debug.json", Map.of("providers", debugProviders));
@@ -76,16 +93,6 @@ final class MenuResources {
         BufferedImage white = new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) white.setRGB(x, y, 0xFFFFFFFF);
         png(pack, "assets/lumamenu/textures/white.png", white);
-        write(pack, "assets/lumamenu/items/plane.json", """
-            {"model":{"type":"minecraft:model","model":"lumamenu:item/plane",
-              "tints":[{"type":"minecraft:custom_model_data","index":0,"default":16777215}]}}
-            """);
-        write(pack, "assets/lumamenu/models/item/plane.json", """
-            {"gui_light":"front","textures":{"white":"lumamenu:white"},
-             "elements":[{"from":[0,0,8],"to":[16,16,8],"light_emission":15,
-              "faces":{"north":{"texture":"#white","tintindex":0},
-                       "south":{"texture":"#white","tintindex":0}}}]}
-            """);
         write(pack, "assets/lumamenu/items/target.json", """
             {"model":{"type":"minecraft:model","model":"lumamenu:item/target"}}
             """);

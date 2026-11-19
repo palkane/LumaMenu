@@ -122,5 +122,56 @@ final class NativeDialogChecks {
         }
         return max[0] == 0 && moved[0] == 0;
     }
+    /**
+     * A real left click on a full corner Dialog screen, {@code dx, dy} from the body widget's top-left corner (its
+     * padding included). Returns the custom actions sent, after checking the body cannot scroll.
+     */
+    static List<Identifier> click(Component body, Font font, int width, int screenWidth, int screenHeight,
+                                  float dx, float dy) throws Exception {
+        return click(body, font, width, screenWidth, screenHeight, dx, dy, false);
+    }
+    /** {@code absolute}: {@code dx, dy} are screen GUI coordinates instead of widget-relative ones. */
+    static List<Identifier> click(Component body, Font font, int width, int screenWidth, int screenHeight,
+                                  float dx, float dy, boolean absolute) throws Exception {
+        net.minecraft.client.gui.screens.dialog.body.DialogBodyHandlers.bootstrap();
+        Minecraft minecraft = (Minecraft) UNSAFE.allocateInstance(Minecraft.class);
+        OfflineGui gui = (OfflineGui) UNSAFE.allocateInstance(OfflineGui.class);
+        MultiPlayerGameMode mode = (MultiPlayerGameMode) UNSAFE.allocateInstance(MultiPlayerGameMode.class);
+        set(Minecraft.class, null, "instance", minecraft);
+        set(Minecraft.class, minecraft, "font", font);
+        set(Minecraft.class, minecraft, "gui", gui);
+        set(Minecraft.class, minecraft, "lastInputType", net.minecraft.client.InputType.MOUSE);
+        minecraft.gameMode = mode;
+        set(MultiPlayerGameMode.class, mode, "localPlayerMode", GameType.SURVIVAL);
+        List<Identifier> sent = new ArrayList<>();
+        DialogConnectionAccess connection = (DialogConnectionAccess) Proxy.newProxyInstance(
+            NativeDialogChecks.class.getClassLoader(), new Class[]{DialogConnectionAccess.class},
+            (proxy, method, args) -> {
+                if (method.getName().equals("sendCustomAction")) { sent.add((Identifier) args[0]); return null; }
+                if (method.getName().equals("serverLinks")) return net.minecraft.server.ServerLinks.EMPTY;
+                if (method.getReturnType() == boolean.class) return false;
+                if (method.getReturnType() == void.class) return null;
+                throw new UnsupportedOperationException(method.toString());
+            });
+        var common = new CommonDialogData(Component.literal(" "), Optional.empty(), false, false,
+            DialogAction.NONE, List.of(new net.minecraft.server.dialog.body.PlainMessage(body, width)), List.of());
+        var screen = new DialogListDialogScreen(null, new DialogListDialog(common, net.minecraft.core.HolderSet.direct(),
+            Optional.empty(), 1, 1), connection);
+        screen.width = screenWidth; screen.height = screenHeight;
+        gui.selected = screen;
+        Method init = DialogScreen.class.getDeclaredMethod("init");
+        init.setAccessible(true); init.invoke(screen);
+        var scroll = (ScrollableLayout) get(DialogScreen.class, screen, "bodyScroll");
+        double[] max = {0};
+        scroll.visitChildren(child -> { if (child instanceof AbstractScrollArea area) max[0] = Math.max(max[0], area.maxScrollAmount()); });
+        check(max[0] == 0, "clicked Dialog body cannot scroll");
+        List<FocusableTextWidget> widgets = new ArrayList<>();
+        ((net.minecraft.client.gui.layouts.Layout) get(ScrollableLayout.class, scroll, "content"))
+            .visitWidgets(child -> { if (child instanceof FocusableTextWidget widget) widgets.add(widget); });
+        var widget = widgets.getFirst();
+        screen.mouseClicked(new MouseButtonEvent(absolute ? dx : widget.getX() + dx, absolute ? dy : widget.getY() + dy,
+            new MouseButtonInfo(com.mojang.blaze3d.platform.InputConstants.MOUSE_BUTTON_LEFT, 0)), false);
+        return List.copyOf(sent);
+    }
     static int checks() { return checks; }
 }

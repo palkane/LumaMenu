@@ -51,8 +51,10 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     private DisplayRenderer renderer;
     private final OwnDialogs ownDialogs = new OwnDialogs();
     private Settings settings;
+    /** Players already offered the join calibration this login. */
+    private final Set<UUID> joinPrompted = new HashSet<>();
 
-    record Settings(boolean cornerClose, boolean hideWarning, int rotationHitStep) {}
+    record Settings(boolean cornerClose, boolean hideWarning, int rotationHitStep, boolean calibrateOnJoin) {}
 
     @Override public void onEnable() {
         try {
@@ -68,6 +70,12 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             Files.createDirectories(layouts);
             for (String name : List.of("demo.yml", "coordinates.yml", "transforms.yml", "features.yml"))
                 if (!Files.exists(layouts.resolve(name))) saveResource("layouts/" + name, false);
+            if (!Files.exists(data.resolve("themes.yml"))) saveResource("themes.yml", false);
+            for (String theme : List.of("rift", "parchment"))
+                for (String corner : List.of("tl", "tr", "bl", "br")) {
+                    String name = "images/theme/" + theme + "/corner-" + corner + ".png";
+                    if (!Files.exists(data.resolve(name))) saveResource(name, false);
+                }
             Calibration.Store calibration = new Calibration.Store(data.resolve("calibration.properties"));
             MenuCache cache = new MenuCache(data.resolve("cache/compiled.json.gz"));
             MenuCache.State state;
@@ -89,6 +97,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
             engine = new MenuEngine(this, new Platform(), renderer, calibration, cache, state,
                 new RenderPreferences(data.resolve("render-modes.properties")));
+            engine.themes(Themes.load(data.resolve("themes.yml")), new ThemeChoices(data.resolve("player-themes.properties")));
             Path pack = exportPack();
             Bukkit.getPluginManager().registerEvents(this, this);
             Objects.requireNonNull(getCommand("lumamenu")).setExecutor(this);
@@ -110,8 +119,11 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         ImageCatalog images = ImageCatalog.scan(Layouts.images(layouts));
         renderer.images(images);
         return MenuResources.export(getDataFolder().toPath().resolve("resourcepack"), settings.hideWarning(),
-            images, engine.imageModels());
+            images, engine.imageModels(images));
     }
+
+    /** The menu API for scripts that reach plugins by name (also registered with the ServicesManager); null before startup. */
+    public LumaMenuApi getMenuApi() { return engine; }
 
     @Override public void onDisable() {
         if (engine != null) engine.closeAll(Reason.PLUGIN_DISABLED);
@@ -196,7 +208,22 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                                 .clickEvent(ClickEvent.runCommand("/lumamenu mode enhanced"))));
                     }
                 }
-                default -> sender.sendMessage("/lumamenu [open <页面>|list|calibrate|close|mode|debug|reload [文件]|status|export]");
+                case "theme" -> {
+                    if (args.length > 2) throw new IllegalArgumentException("/lumamenu theme [主题]");
+                    var themes = engine.themes();
+                    if (args.length == 2) {
+                        engine.theme(player, args[1].toLowerCase(Locale.ROOT));
+                        player.sendMessage("LumaMenu：已切换为" + themes.get(engine.theme(player)).label() + "主题。");
+                    } else {
+                        player.sendMessage("LumaMenu：当前为" + themes.get(engine.theme(player)).label() + "主题");
+                        Component choices = Component.empty();
+                        for (String name : themes.names())
+                            choices = choices.append(Component.text("[" + themes.get(name).label() + "]  ", NamedTextColor.LIGHT_PURPLE)
+                                .clickEvent(ClickEvent.runCommand("/lumamenu theme " + name)));
+                        player.sendMessage(choices);
+                    }
+                }
+                default -> sender.sendMessage("/lumamenu [open <页面>|list|calibrate|close|mode|theme|debug|reload [文件]|status|export]");
             }
         } catch (Exception error) {
             sender.sendMessage("LumaMenu：" + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()));
@@ -209,7 +236,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     @Override public List<String> onTabComplete(CommandSender sender, Command command, String label, String[] args) {
         if (engine == null) return List.of();
         if (args.length == 1) {
-            List<String> values = new ArrayList<>(List.of("open", "list", "calibrate", "close", "mode"));
+            List<String> values = new ArrayList<>(List.of("open", "list", "calibrate", "close", "mode", "theme"));
             if (sender.hasPermission("lumamenu.admin")) values.addAll(List.of("debug", "reload", "status", "export"));
             return values.stream().filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
@@ -219,6 +246,8 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             return engine.files().keySet().stream().filter(s -> s.startsWith(args[1])).sorted().toList();
         if (args.length == 2 && args[0].equalsIgnoreCase("debug"))
             return List.of("on", "off").stream().filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+        if (args.length == 2 && args[0].equalsIgnoreCase("theme"))
+            return engine.themes().names().stream().filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
         if (args.length == 2 && args[0].equalsIgnoreCase("mode"))
             return Arrays.stream(RenderMode.values()).map(RenderMode::key)
                 .filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
@@ -236,6 +265,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         engine.forget(event.getPlayer().getUniqueId());
         inventory.forget(event.getPlayer().getUniqueId());
         ownDialogs.clear(event.getPlayer().getUniqueId());
+        joinPrompted.remove(event.getPlayer().getUniqueId());
     }
     @EventHandler public void world(PlayerChangedWorldEvent event) { engine.close(event.getPlayer(), Reason.WORLD_CHANGED, true); }
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -255,8 +285,20 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         if (event.getPlugin() != this) engine.ownerDisabled(event.getPlugin());
     }
     @EventHandler public void resource(PlayerResourcePackStatusEvent event) {
-        if (event.getStatus() != PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED)
-            engine.close(event.getPlayer(), Reason.RESOURCE_PACK_CHANGED, true);
+        Player player = event.getPlayer();
+        if (event.getStatus() != PlayerResourcePackStatusEvent.Status.SUCCESSFULLY_LOADED) {
+            engine.close(player, Reason.RESOURCE_PACK_CHANGED, true);
+            return;
+        }
+        if (!settings.calibrateOnJoin() || !joinPrompted.add(player.getUniqueId())) return;
+        // Give the client a second after the pack applies; the hit glyphs and markers come from that pack.
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!player.isOnline() || engine.calibrated(player) || engine.busy(player.getUniqueId())) return;
+            try { engine.calibrate(player); }
+            catch (RuntimeException error) {
+                getLogger().info("Join calibration skipped for " + player.getName() + ": " + error.getMessage());
+            }
+        }, 20);
     }
 
     private void registerDialogMonitor() {
@@ -347,7 +389,8 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 throw new IllegalStateException("首版需要26.3客户端");
             if (!player.hasResourcePack()) throw new IllegalStateException("请先接收服务器资源包");
         }
-        @Override public void show(Player player, Component body, ClickEvent exit, int bodyWidth, boolean cornerClose) {
+        @Override public void show(Player player, Component body, ClickEvent exit, int bodyWidth, boolean cornerClose,
+                                   boolean escape) {
             var payload = (ClickEvent.Payload.Custom) exit.payload();
             Dialog dialog = Dialog.create(factory -> {
                 // A notice adds a 33-high footer but drops the list's empty grid and its 10 spacing, so with two fewer
@@ -355,7 +398,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 DialogType type = cornerClose ? DialogType.dialogList(RegistrySet.keySet(RegistryKey.DIALOG, List.of())).build()
                     : DialogType.notice(ActionButton.builder(Component.text("关闭")).width(60)
                         .action(DialogAction.customClick(payload.key(), payload.nbt())).build());
-                factory.empty().base(DialogBase.builder(Component.text(" ")).pause(false).canCloseWithEscape(!cornerClose)
+                factory.empty().base(DialogBase.builder(Component.text(" ")).pause(false).canCloseWithEscape(!cornerClose || escape)
                     .afterAction(DialogBase.DialogAfterAction.NONE)
                     .body(List.of(DialogBody.plainMessage(body, bodyWidth))).build())
                     .type(type);
@@ -376,8 +419,9 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             var scheduled = Bukkit.getScheduler().runTaskLater(LumaMenuPlugin.this, task, ticks);
             return scheduled::cancel;
         }
-        @Override public void closed(Player player, String page, org.bukkit.plugin.Plugin owner, Reason reason) {
-            Bukkit.getPluginManager().callEvent(new LumaMenuClosedEvent(player, page, owner, reason));
+        @Override public void closed(Player player, UUID session, String page, org.bukkit.plugin.Plugin owner,
+                                     Reason reason) {
+            Bukkit.getPluginManager().callEvent(new LumaMenuClosedEvent(player, session, page, owner, reason));
         }
         @Override public void sound(Player player, String sound) {
             String[] parts = sound.split("-");
@@ -387,13 +431,119 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             player.playSound(player.getLocation(), key, SoundCategory.MASTER, volume, pitch);
         }
         @Override public void failure(Throwable error) { getLogger().log(Level.WARNING, "LumaMenu operation failed", error); }
+        /** Native multi-action Dialog with text inputs; Paper keeps the click callbacks, each used once. */
+        @Override public void form(Player player, MenuEngine.FormView form,
+                                   java.util.function.Consumer<Map<String, String>> submitted, Runnable cancelled) {
+            boolean[] done = {false};
+            java.util.function.Consumer<Runnable> once = task -> {
+                Runnable run = () -> { if (done[0]) return; done[0] = true; task.run(); };
+                if (Bukkit.isPrimaryThread()) run.run();
+                else if (isEnabled()) Bukkit.getScheduler().runTask(LumaMenuPlugin.this, run);
+            };
+            var options = net.kyori.adventure.text.event.ClickCallback.Options.builder()
+                .uses(1).lifetime(java.time.Duration.ofHours(1)).build();
+            List<io.papermc.paper.registry.data.dialog.input.DialogInput> inputs = form.inputs().stream()
+                .map(input -> {
+                    var text = io.papermc.paper.registry.data.dialog.input.DialogInput.text(input.key(),
+                        Component.text(input.label())).initial(input.initial()).maxLength(input.maxLength());
+                    // Long limits: a wide box of 4..8 lines (9 px each plus padding) instead of one line.
+                    if (input.large()) text.width(300).multiline(
+                        io.papermc.paper.registry.data.dialog.input.TextDialogInput.MultilineOptions.create(null,
+                            Math.clamp((input.maxLength() + 31) / 32, 4, 8) * 9 + 8));
+                    return (io.papermc.paper.registry.data.dialog.input.DialogInput) text.build();
+                })
+                .toList();
+            var submit = ActionButton.builder(Component.text(form.submit()))
+                .action(DialogAction.customClick((view, audience) -> once.accept(() -> {
+                    Map<String, String> values = new LinkedHashMap<>();
+                    for (var input : form.inputs()) {
+                        String text = view.getText(input.key());
+                        if (text != null) values.put(input.key(), text);
+                    }
+                    submitted.accept(values);
+                }), options)).build();
+            var cancel = ActionButton.builder(Component.text(form.cancel()))
+                .action(DialogAction.customClick((view, audience) -> once.accept(cancelled), options)).build();
+            Dialog dialog = Dialog.create(factory -> factory.empty()
+                .base(DialogBase.builder(Component.text(form.title())).pause(false).canCloseWithEscape(true)
+                    .afterAction(DialogBase.DialogAfterAction.NONE).inputs(inputs).build())
+                .type(DialogType.multiAction(List.of(submit)).exitAction(cancel).build()));
+            ownDialogs.expect(player.getUniqueId());
+            try { player.showDialog(dialog); }
+            catch (RuntimeException error) { ownDialogs.cancel(player.getUniqueId()); throw error; }
+        }
+        /** Reflection, as DialogMenu did, so PlaceholderAPI stays optional. */
+        @Override public String placeholders(Player player, String text) {
+            var papi = Bukkit.getPluginManager().getPlugin("PlaceholderAPI");
+            if (papi == null || !papi.isEnabled()) return null;
+            try {
+                String value = (String) Class.forName("me.clip.placeholderapi.PlaceholderAPI", true,
+                        papi.getClass().getClassLoader())
+                    .getMethod("setPlaceholders", org.bukkit.OfflinePlayer.class, String.class).invoke(null, player, text);
+                return value == null || value.equals(text) ? null : value;
+            } catch (ReflectiveOperationException error) { throw new IllegalStateException("PAPI读取失败", error); }
+        }
+        /** Skript stores variable names in lower case; reflection keeps Skript optional. */
+        @Override public Object skript(String name) {
+            var skript = Bukkit.getPluginManager().getPlugin("Skript");
+            if (skript == null || !skript.isEnabled()) return null;
+            try {
+                return Class.forName("ch.njol.skript.variables.Variables", true, skript.getClass().getClassLoader())
+                    .getMethod("getVariable", String.class, org.bukkit.event.Event.class, boolean.class)
+                    .invoke(null, name.toLowerCase(Locale.ROOT), null, false);
+            } catch (ReflectiveOperationException error) { throw new IllegalStateException("Skript变量读取失败", error); }
+        }
+        @Override public void skriptCall(String function, Object... arguments) {
+            try {
+                Object found = skriptClass("ch.njol.skript.lang.function.Functions")
+                    .getMethod("getFunction", String.class).invoke(null, function);
+                if (found == null) throw new IllegalStateException("Skript函数不存在：" + function);
+                Object[][] parameters = new Object[arguments.length][];
+                for (int i = 0; i < arguments.length; i++) parameters[i] = new Object[]{arguments[i]};
+                Class<?> type = skriptClass("ch.njol.skript.lang.function.Function");
+                try { type.getMethod("execute", Object[][].class).invoke(found, (Object) parameters); }
+                finally { type.getMethod("resetReturnValue").invoke(found); }
+            } catch (ReflectiveOperationException error) { throw new IllegalStateException("Skript函数调用失败：" + function, error); }
+        }
+        @Override public List<Object> skriptList(String name) {
+            if (!skriptEnabled()) return List.of();
+            try {
+                var values = (Iterator<?>) skriptClass("ch.njol.skript.variables.Variables")
+                    .getMethod("getVariableIterator", String.class, boolean.class, org.bukkit.event.Event.class)
+                    .invoke(null, name, false, null);
+                var second = skriptClass("ch.njol.util.Pair").getMethod("getSecond");
+                List<Object> result = new ArrayList<>();
+                while (values.hasNext()) result.add(second.invoke(values.next()));
+                return result;
+            } catch (ReflectiveOperationException error) { throw new IllegalStateException("Skript列表读取失败：" + name, error); }
+        }
+        @Override public void skriptSet(String name, Object value) {
+            if (!skriptEnabled()) return;
+            try {
+                skriptClass("ch.njol.skript.variables.Variables")
+                    .getMethod("setVariable", String.class, Object.class, org.bukkit.event.Event.class, boolean.class)
+                    .invoke(null, name, value, null, false);
+            } catch (ReflectiveOperationException error) { throw new IllegalStateException("Skript变量写入失败：" + name, error); }
+        }
+        private boolean skriptEnabled() {
+            var skript = Bukkit.getPluginManager().getPlugin("Skript");
+            return skript != null && skript.isEnabled();
+        }
+        private Class<?> skriptClass(String name) throws ClassNotFoundException {
+            var skript = Bukkit.getPluginManager().getPlugin("Skript");
+            if (skript == null || !skript.isEnabled()) throw new IllegalStateException("Skript未启用");
+            return Class.forName(name, true, skript.getClass().getClassLoader());
+        }
+        @Override public String server() {
+            return getDataFolder().getAbsoluteFile().getParentFile().getParentFile().getName();
+        }
     }
 
     static Settings readSettings(org.bukkit.configuration.ConfigurationSection config) {
-        for (String key : List.of("corner-close", "hide-warning"))
+        for (String key : List.of("corner-close", "hide-warning", "calibrate-on-join"))
             if (config.contains(key) && !config.isBoolean(key))
                 throw new IllegalArgumentException(key + "需要true/false");
         return new Settings(config.getBoolean("corner-close", true), config.getBoolean("hide-warning", true),
-            HitGeometry.step(config.get("rotation-hit-step")));
+            HitGeometry.step(config.get("rotation-hit-step")), config.getBoolean("calibrate-on-join", true));
     }
 }

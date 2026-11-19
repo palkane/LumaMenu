@@ -150,9 +150,17 @@ final class TransformChecks {
             .mul(around(mapping, 190, 90, 4, -9, 13, 1.1f, .9f, 1.2f))
             .translate((float) center.x(), (float) -center.y(), 0)
             .scale(40f / 300, 20f / 220, Math.min(40f / 300, 20f / 220));
-        near(matrix(fill), expected, "nested nonuniform groups preserve full affine matrix including shear");
+        // The plane is a TextDisplay background: its own local rectangle maps onto the authored unit square.
+        var fillCenter = Transforms.center(fill.visual());
+        var fillHalf = Transforms.halfSize(fill.visual());
         for (float x : new float[]{-.5f, .5f}) for (float y : new float[]{-.5f, .5f}) {
-            var actual = matrix(fill).transformPosition(new Vector3f(x, y, 0));
+            var local = new Vector3f(fillCenter.x + 2 * x * fillHalf.x, fillCenter.y + 2 * y * fillHalf.y, 0);
+            check(matrix(fill).transformPosition(new Vector3f(local)).distance(expected.transformPosition(new Vector3f(x, y, 0)))
+                < .00005, "nested nonuniform groups preserve the full affine plane including shear");
+        }
+        for (float x : new float[]{-.5f, .5f}) for (float y : new float[]{-.5f, .5f}) {
+            var actual = matrix(fill).transformPosition(
+                new Vector3f(fillCenter.x + 2 * x * fillHalf.x, fillCenter.y + 2 * y * fillHalf.y, 0));
             var wanted = expected.transformPosition(new Vector3f(x, y, 0));
             double dx = mapping.sx() * (actual.x / (1 - actual.z) - wanted.x / (1 - wanted.z));
             double dy = mapping.sy() * (actual.y / (1 - actual.z) - wanted.y / (1 - wanted.z));
@@ -239,6 +247,9 @@ final class TransformChecks {
                 .scale(prepared.sx(), prepared.sy(), prepared.sz())
                 .rotate(new Quaternionf(prepared.rqx(), prepared.rqy(), prepared.rqz(), prepared.rqw()))
                 .translate(visualCenter.x, visualCenter.y, visualCenter.z);
+            // Unit square/cube below spans the visual's own local extent.
+            var visualHalf = Transforms.halfSize(prepared.visual());
+            visible.scale(2 * visualHalf.x, 2 * visualHalf.y, visualHalf.z == 0 ? 1 : 2 * visualHalf.z);
             for (int axis = 0; axis < 3; axis++) {
                 Vector3f unit = new Vector3f(axis == 0 ? 1 : 0, axis == 1 ? 1 : 0, axis == 2 ? 1 : 0);
                 if (kind.equals("button") && axis == 2) continue;

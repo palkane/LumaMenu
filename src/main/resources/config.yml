@@ -14,3 +14,7 @@ hide-warning: true
 # 只有拉伸而无旋转时保持 1 单位命中精度；未变换的普通控件和定位网格不变。
 # reload 时按个人校准编译并保存，打开复用缓存；修改后执行 /lumamenu reload。
 rotation-hit-step: 2
+
+# 尚未定位的玩家每次登录、资源包加载完成约 1 秒后自动打开一次定位界面（本次登录只提示一次）。
+# 取消或失败保留旧状态，之后仍可 /lumamenu calibrate 或在打开菜单时定位；修改后执行 /lumamenu reload。
+calibrate-on-join: true
