@@ -278,16 +278,28 @@ final class MenuEngine implements LumaMenuApi {
         tokens.publish(session.player.getUniqueId(), actions);
         stamps.put(session.player.getUniqueId(), new Stamp(session.id, actions.nonce));
         boolean corner = page.cornerClose(host.cornerClose());
+        // A page that offers this player its own close control needs no Dialog "×" (Esc stays off as well).
+        boolean chrome = corner && !ownClose(page, allowed);
         var hit = compiled.hit(calibration.get(session.player.getUniqueId()), page.id(), session.mode, session.down);
         int rows = HitSurface.usableRows(page.surfaceRows(), page.surfaceOriginY(), !corner);
-        if (allowed.stream().anyMatch(index -> (corner ? hit.chrome().surface() : hit.surface()).stream()
+        if (allowed.stream().anyMatch(index -> (chrome ? hit.chrome().surface() : hit.surface()).stream()
                 .anyMatch(patch -> patch.control() == index && patch.row() >= rows)))
             throw new IllegalStateException(page.id() + "：原生关闭按钮页画布底部两行不能放点击区域");
-        host.show(session.player, HitSurface.frame(HitSurface.bind(corner ? hit.chrome().surface() : hit.surface(),
+        host.show(session.player, HitSurface.frame(HitSurface.bind(chrome ? hit.chrome().surface() : hit.surface(),
             clicks, tips, allowed, rows, page.surfaceAdvance(),
-            corner ? hit.chrome() : null, exit, debug.contains(session.player.getUniqueId())),
+            chrome ? hit.chrome() : null, exit, debug.contains(session.player.getUniqueId())),
             page.surfaceOriginY(), rows, page.surfaceAdvance(), !corner),
             exit, page.bodyWidth(), corner);
+    }
+
+    /** Whether a clickable control this player may use closes the menu directly. */
+    static boolean ownClose(Layouts.Page page, Set<Integer> allowed) {
+        for (int index : allowed) {
+            Layouts.Control control = page.controls().get(index);
+            if (control.clickable() && (control.actions().contains("close") || control.doubleActions().contains("close")))
+                return true;
+        }
+        return false;
     }
 
     /**

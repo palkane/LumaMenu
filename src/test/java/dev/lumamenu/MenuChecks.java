@@ -588,6 +588,18 @@ public final class MenuChecks {
         check(cache.read().profiles().containsKey(align.get(client.id).key()), "calibration saves precomputed profile for next opens");
         check(host.errors.isEmpty(), "normal navigation/calibration reports no operation failures");
         check(host.begins == host.ends, "all session cleanup paths end their camera exactly once");
+        var own = engine.open(owner.plugin, client.player, "demo", Map.of(), callbacks::add, closed::add);
+        check(!GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("lumamenu:chrome") && host.corners.getLast(),
+            "a page with its own close button gets no Dialog × and keeps Esc off");
+        own.open("coordinates");
+        check(GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("lumamenu:chrome"),
+            "a page without a close control keeps the Dialog ×");
+        engine.close(client.player);
+        var guarded = parse("schema-version: 3\nid: test\nfrontend: {c: {type: button, content: x, width: 40, height: 20, "
+            + "offset: {x: 50, y: 50}, permission: staff, actions: close}, t: {type: button, content: y, width: 40, height: 20, "
+            + "offset: {x: 150, y: 50}, actions: 'callback: t'}}").get("test");
+        check(MenuEngine.ownClose(guarded, Set.of(0, 1)) && !MenuEngine.ownClose(guarded, Set.of(1)),
+            "a close button the player may not use does not remove the Dialog ×");
         host.corner = false;
         var footer = engine.open(owner.plugin, client.player, "demo", Map.of(), callbacks::add, closed::add);
         check(!GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("lumamenu:chrome"),
