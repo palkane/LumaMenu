@@ -46,7 +46,7 @@ final class DialogGeometry {
         set(Minecraft.class, minecraft, "gui", gui);
         set(Minecraft.class, minecraft, "lastInputType", net.minecraft.client.InputType.MOUSE);
         minecraft.gameMode = gameMode;
-        set(MultiPlayerGameMode.class, gameMode, "localPlayerMode", GameType.SPECTATOR);
+        set(MultiPlayerGameMode.class, gameMode, "localPlayerMode", GameType.SURVIVAL);
         List<Identifier> sent = new ArrayList<>();
         DialogConnectionAccess connection = (DialogConnectionAccess) Proxy.newProxyInstance(
             DialogGeometry.class.getClassLoader(), new Class[]{DialogConnectionAccess.class},

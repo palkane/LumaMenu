@@ -56,7 +56,7 @@ final class NativeDialogChecks {
         set(Minecraft.class, minecraft, "gui", gui);
         set(Minecraft.class, minecraft, "lastInputType", net.minecraft.client.InputType.MOUSE);
         minecraft.gameMode = mode;
-        set(MultiPlayerGameMode.class, mode, "localPlayerMode", GameType.SPECTATOR);
+        set(MultiPlayerGameMode.class, mode, "localPlayerMode", GameType.SURVIVAL);
         List<Identifier> sent = new ArrayList<>();
         DialogConnectionAccess connection = (DialogConnectionAccess) Proxy.newProxyInstance(
             NativeDialogChecks.class.getClassLoader(), new Class[]{DialogConnectionAccess.class},
@@ -90,7 +90,7 @@ final class NativeDialogChecks {
             }
         });
         if (verifyActions) {
-            check(minecraft.gameMode.getPlayerMode() == GameType.SPECTATOR, "real native spectator mode is selected");
+            check(minecraft.gameMode.getPlayerMode() == GameType.SURVIVAL, "menus keep the real survival mode on the client");
             check(screen.shouldCloseOnEsc() == footer, "Esc option reaches native Dialog screen");
             screen.keyPressed(new KeyEvent(com.mojang.blaze3d.platform.InputConstants.KEY_ESCAPE, 0, 0));
             check(footer ? sent.equals(List.of(exitClick.id())) && gui.selected == null
@@ -114,7 +114,7 @@ final class NativeDialogChecks {
                     + widget.getWidth() + "x" + widget.getHeight() + " at=" + x + "," + y
                     + " style=" + finder.result() + " consumed=" + clicked + " sent=" + sent);
                 check(clicked && sent.size() == 1 && sent.getFirst().getNamespace().equals("lumamenu"),
-                    "native spectator Dialog X receives an actual mouse click");
+                    "native survival Dialog X receives an actual mouse click");
             }
             System.out.println("Full Dialog footer=" + footer + " header=" + layout.getHeaderHeight()
                 + " footerHeight=" + layout.getFooterHeight() + " viewport=" + layout.getContentHeight()

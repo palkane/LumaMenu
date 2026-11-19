@@ -110,8 +110,10 @@ final class Calibration {
                 for (String id : properties.stringPropertyNames()) {
                     String[] fields = properties.getProperty(id).split(" ");
                     if (fields.length != 5) throw new IllegalArgumentException();
-                    if (fields[0].equals("1")) continue; // The 205-high surface must be calibrated again.
-                    if (!fields[0].equals("2")) throw new IllegalArgumentException();
+                    // v1: the old 205-high surface; v2: measured through the spectator view, whose flying FOV
+                    // modifier (1.1) the camera rig no longer applies. Both must be calibrated again.
+                    if (fields[0].equals("1") || fields[0].equals("2")) continue;
+                    if (!fields[0].equals("3")) throw new IllegalArgumentException();
                     values.put(UUID.fromString(id), new Mapping(Double.parseDouble(fields[1]),
                         Double.parseDouble(fields[2]), Double.parseDouble(fields[3]), Double.parseDouble(fields[4])));
                 }
@@ -124,11 +126,11 @@ final class Calibration {
             next.put(player, Objects.requireNonNull(mapping));
             Properties properties = new Properties();
             next.forEach((id, value) -> properties.setProperty(id.toString(),
-                "2 " + value.sx + " " + value.sy + " " + value.ox + " " + value.oy));
+                "3 " + value.sx + " " + value.sy + " " + value.ox + " " + value.oy));
             Files.createDirectories(file.toAbsolutePath().getParent());
             Path temp = Files.createTempFile(file.toAbsolutePath().getParent(), "calibration-", ".tmp");
             try {
-                try (var output = Files.newOutputStream(temp)) { properties.store(output, "LumaMenu calibration v2, 452x180"); }
+                try (var output = Files.newOutputStream(temp)) { properties.store(output, "LumaMenu calibration v3, 452x180, camera rig"); }
                 atomicReplace(temp, file);
                 values.clear();
                 values.putAll(next);

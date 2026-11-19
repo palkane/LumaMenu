@@ -3,6 +3,7 @@ package dev.lumamenu;
 import com.github.retrooper.packetevents.*;
 import com.github.retrooper.packetevents.manager.server.*;
 import com.github.retrooper.packetevents.netty.buffer.ByteBufHelper;
+import com.github.retrooper.packetevents.protocol.component.ComponentTypes;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
 import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
@@ -66,7 +67,7 @@ public final class MenuChecks {
         text();
         coordinates();
         renderer();
-        spectator();
+        clientInventory();
         lookDown();
         bodyCompaction();
         ownDialogs();
@@ -538,17 +539,21 @@ public final class MenuChecks {
             Calibration.Point point = MAPPING.project(Calibration.TARGETS.get(target));
             float previousSize = Float.POSITIVE_INFINITY;
             for (int round = 0; round < 3; round++) {
-                check(packets.getLast() instanceof WrapperPlayServerSetPassengers mount && mount.getEntityId() == 4321
-                    && mount.getPassengers().length == 2, "calibration displays ride the viewer");
-                var marker = (WrapperPlayServerEntityMetadata) packets.get(packets.size() - 2);
+                int m = packets.size() - 1;
+                while (!(packets.get(m) instanceof WrapperPlayServerSetPassengers mount && mount.getEntityId() == 4321)) m--;
+                check(((WrapperPlayServerSetPassengers) packets.get(m)).getPassengers().length == 3
+                    && packets.get(m + 2) instanceof WrapperPlayServerCamera,
+                    "calibration displays and the camera rig ride the viewer, then the camera moves onto the rig");
+                // Before the mount: backing spawn/metadata, cross spawn/metadata, then the two rig links.
+                var marker = (WrapperPlayServerEntityMetadata) packets.get(m - 5);
                 var size = (com.github.retrooper.packetevents.util.Vector3f) value(marker.getEntityMetadata(), 12);
-                check(packets.get(packets.size() - 5) instanceof WrapperPlayServerSpawnEntity backgroundEntity
+                check(packets.get(m - 8) instanceof WrapperPlayServerSpawnEntity backgroundEntity
                     && backgroundEntity.getEntityType() == EntityTypes.ITEM_DISPLAY
-                    && packets.get(packets.size() - 4) instanceof WrapperPlayServerEntityMetadata,
+                    && packets.get(m - 7) instanceof WrapperPlayServerEntityMetadata,
                     "calibration backing missing: a dark ItemDisplay must precede the cross");
-                var backing = (WrapperPlayServerEntityMetadata) packets.get(packets.size() - 4);
+                var backing = (WrapperPlayServerEntityMetadata) packets.get(m - 7);
                 var backingSize = (com.github.retrooper.packetevents.util.Vector3f) value(backing.getEntityMetadata(), 12);
-                var backingSpawn = (WrapperPlayServerSpawnEntity) packets.get(packets.size() - 5);
+                var backingSpawn = (WrapperPlayServerSpawnEntity) packets.get(m - 8);
                 var backingItem = (com.github.retrooper.packetevents.protocol.item.ItemStack) value(backing.getEntityMetadata(), 23);
                 check(backingSpawn.getEntityType() == EntityTypes.ITEM_DISPLAY
                     && backingItem.getComponent(com.github.retrooper.packetevents.protocol.component.ComponentTypes.CUSTOM_MODEL_DATA_LISTS)
@@ -684,7 +689,8 @@ public final class MenuChecks {
                     check(spawnCount(packets) == spawns, "probe updates text without respawning or rebuilding geometry");
                     check(packets.stream()
                         .filter(WrapperPlayServerEntityMetadata.class::isInstance).map(WrapperPlayServerEntityMetadata.class::cast)
-                        .filter(packet -> value(packet.getEntityMetadata(), 23) instanceof Component)
+                        .filter(packet -> packet.getEntityMetadata().stream()
+                            .anyMatch(d -> d.getIndex() == 23 && d.getValue() instanceof Component))
                         .reduce((first, second) -> second)
                         .map(packet -> ((Component) value(packet.getEntityMetadata(), 23))
                             .equals(TextLayout.component(range, 0x404040, TextLayout.Format.DEFAULT)))
@@ -784,6 +790,7 @@ public final class MenuChecks {
         var enhancedByPitch = translationsByPitch(nativeFixtures, RenderMode.ENHANCED, new float[]{-89, -35, 0, 47, 89});
         int nativeIndex = 0;
         for (var packet : nativePackets) if (packet instanceof WrapperPlayServerEntityMetadata metadata) {
+            if (nativeIndex == nativeFixtures.size()) break; // the camera rig follows the displays
             var entry = new Gson().toJsonTree(nativeFixtures.get(nativeIndex)).getAsJsonObject();
             entry.add("encodedTranslationByPitch", enhancedByPitch.get(nativeIndex++));
             for (var data : metadata.getEntityMetadata()) {
@@ -804,6 +811,7 @@ public final class MenuChecks {
         var compatibleByPitch = translationsByPitch(compatibleFixtures, RenderMode.COMPATIBLE, new float[]{-90, -35, 0, 47, 90});
         nativeIndex = 0;
         for (var packet : nativePackets) if (packet instanceof WrapperPlayServerEntityMetadata metadata) {
+            if (nativeIndex == compatibleFixtures.size()) break; // the camera rig follows the displays
             var entry = new Gson().toJsonTree(compatibleFixtures.get(nativeIndex)).getAsJsonObject();
             entry.add("encodedTranslationByPitch", compatibleByPitch.get(nativeIndex++));
             for (var data : metadata.getEntityMetadata()) {
@@ -1223,25 +1231,51 @@ public final class MenuChecks {
         List<PacketWrapper<?>> sent = new ArrayList<>();
         DisplayRenderer renderer = displays((p, packet) -> { serialize(packet); sent.add(packet); });
         renderer.show(first.player, prepared, Map.of("status", "native"));
-        check(sent.stream().filter(WrapperPlayServerSpawnEntity.class::isInstance).map(WrapperPlayServerSpawnEntity.class::cast)
-            .map(WrapperPlayServerSpawnEntity::getEntityType).collect(java.util.stream.Collectors.toSet())
-            .equals(Set.of(EntityTypes.TEXT_DISPLAY, EntityTypes.ITEM_DISPLAY)),
-            "all nontext displays are items, never BlockDisplay");
+        var spawns = sent.stream().filter(WrapperPlayServerSpawnEntity.class::isInstance)
+            .map(WrapperPlayServerSpawnEntity.class::cast).toList();
+        check(spawns.stream().map(WrapperPlayServerSpawnEntity::getEntityType).collect(java.util.stream.Collectors.toSet())
+            .equals(Set.of(EntityTypes.TEXT_DISPLAY, EntityTypes.ITEM_DISPLAY, EntityTypes.INTERACTION)),
+            "all nontext displays are items, never BlockDisplay; only the camera rig uses Interaction");
         Set<Integer> ids = new HashSet<>();
-        for (PacketWrapper<?> packet : sent) if (packet instanceof WrapperPlayServerSpawnEntity spawn)
+        for (var spawn : spawns)
             check(spawn.getEntityId() < 0 && ids.add(spawn.getEntityId()), "distinct private negative entity IDs");
+        var rig = spawns.stream().filter(spawn -> spawn.getEntityType() == EntityTypes.INTERACTION).toList();
+        check(rig.size() == 2 && spawns.size() == prepared.size() + 2
+            && spawns.subList(0, prepared.size()).stream().noneMatch(rig::contains),
+            "two rig entities follow the displays, keeping per-display packet order");
+        int foot = rig.getFirst().getEntityId(), camera = rig.getLast().getEntityId();
         for (PacketWrapper<?> packet : sent) if (packet instanceof WrapperPlayServerEntityMetadata metadata) {
             var data = metadata.getEntityMetadata();
+            if (metadata.getEntityId() == foot || metadata.getEntityId() == camera) {
+                check(value(data, 8).equals(0f), "rig boxes have no width");
+                float height = (Float) value(data, 9);
+                check(metadata.getEntityId() == foot ? height == -1.8f
+                        : Math.abs(height * DisplayRenderer.EYE_RATIO - 1.62f) < 1e-6,
+                    "foot link reaches down to the feet; camera link's eye height equals the viewer's");
+                continue;
+            }
             check(value(data, 16).equals((15 << 4) | (15 << 20)), "full sky/block brightness on every display");
             check(value(data, 15).equals((byte) 3), "camera-centered billboard");
         }
+        var cameraSpawn = rig.getLast();
+        // Spawn rotations travel as byte angles.
+        check(Math.abs(Math.floorMod((int) Math.round(cameraSpawn.getYaw() - first.eye.getYaw()), 360)) <= 1.41
+                && Math.abs(cameraSpawn.getPitch() - first.eye.getPitch()) <= 1.41,
+            "the camera starts with the viewer's own view direction");
         JsonArray backgrounds = backgroundFixtures(prepared, sent, first.eye.getPitch());
-        var mount = (WrapperPlayServerSetPassengers) sent.getLast();
+        var mount = sent.stream().filter(WrapperPlayServerSetPassengers.class::isInstance)
+            .map(WrapperPlayServerSetPassengers.class::cast).filter(packet -> packet.getEntityId() == 4321)
+            .findFirst().orElseThrow();
         int[] mounted = mount.getPassengers();
-        check(mount.getEntityId() == 4321 && mounted.length == prepared.size()
-            && Arrays.stream(mounted).allMatch(ids::contains), "every display rides the viewer's own entity");
-        check(sent.stream().filter(WrapperPlayServerSpawnEntity.class::isInstance).map(WrapperPlayServerSpawnEntity.class::cast)
-            .map(spawn -> spawn.getPosition().getY()).distinct().count() == 1, "all displays share one rider anchor");
+        check(mounted.length == prepared.size() + 1 && mounted[0] == foot
+            && Arrays.stream(mounted).allMatch(ids::contains), "every display and the rig foot ride the viewer's own entity");
+        check(sent.stream().anyMatch(packet -> packet instanceof WrapperPlayServerSetPassengers link
+            && link.getEntityId() == foot && Arrays.equals(link.getPassengers(), new int[]{camera})),
+            "the camera link rides the foot link");
+        check(sent.getLast() instanceof WrapperPlayServerCamera view && view.getCameraId() == camera,
+            "the client camera moves onto the rig only after it is mounted");
+        check(spawns.subList(0, prepared.size()).stream().map(spawn -> spawn.getPosition().getY()).distinct().count() == 1,
+            "all displays share one rider anchor");
         check(Arrays.equals(renderer.passengers(first.id, 4321, new int[]{77}), DisplayRenderer.compose(new int[]{77}, mounted)),
             "vanilla passenger update for the viewer keeps menu displays mounted");
         check(renderer.passengers(first.id, 4321, DisplayRenderer.compose(new int[]{77}, mounted)) == null
@@ -1252,7 +1286,7 @@ public final class MenuChecks {
         List<PacketWrapper<?>> scaledSent = new ArrayList<>();
         var tall = new Client();
         tall.eye.setPitch(30);
-        var scaled = new DisplayRenderer((p, packet) -> scaledSent.add(packet), player -> 2);
+        var scaled = new DisplayRenderer((p, packet) -> scaledSent.add(packet), player -> DisplayRenderer.Body.standing(2));
         scaled.show(tall.player, prepared, Map.of());
         var scaledSpawn = (WrapperPlayServerSpawnEntity) scaledSent.getFirst();
         near(scaledSpawn.getPosition().getY() - tall.eye.getY(), 2 * DisplayRenderer.RIDER_ABOVE_EYE,
@@ -1263,7 +1297,19 @@ public final class MenuChecks {
         near(new Vector3f((float) (t.getX() + rider2.x), (float) (t.getY() + rider2.y), (float) (t.getZ() + rider2.z))
             .distance(expectedOrigin(prepared.getFirst())), 0, "scaled rider offset is removed from the pose exactly");
         scaled.close(tall.player);
+        sent.clear();
+        renderer.show(first.player, prepared, Map.of("status", "again"));
+        check(sent.stream().noneMatch(packet -> packet instanceof WrapperPlayServerCamera view && view.getCameraId() == 4321),
+            "a page change hands the camera straight to the new rig, never back to the player");
+        check(sent.getLast() instanceof WrapperPlayServerDestroyEntities old
+            && Arrays.stream(old.getEntityIds()).boxed().collect(java.util.stream.Collectors.toSet()).equals(ids)
+            && sent.get(sent.size() - 2) instanceof WrapperPlayServerCamera,
+            "the previous displays and rig go only after the new camera is set");
+        sent.clear();
         renderer.close(first.player);
+        check(sent.size() == 2 && sent.getFirst() instanceof WrapperPlayServerCamera back && back.getCameraId() == 4321
+            && sent.getLast() instanceof WrapperPlayServerDestroyEntities gone && gone.getEntityIds().length == prepared.size() + 2,
+            "closing returns the camera to the player before removing displays and rig");
         check(!renderer.active(first.id) && renderer.active(second.id), "close affects one UUID only");
         check(!renderer.riding(first.id) && renderer.passengers(first.id, 4321, new int[]{77}) == null && renderer.riding(second.id),
             "closed menus stop rewriting the viewer's passenger packets");
@@ -1311,7 +1357,7 @@ public final class MenuChecks {
 
     /** Mock players have no server attribute registry; production reads the SCALE attribute. */
     static DisplayRenderer displays(java.util.function.BiConsumer<org.bukkit.entity.Player, PacketWrapper<?>> sender) {
-        return new DisplayRenderer(sender, player -> 1);
+        return new DisplayRenderer(sender, player -> DisplayRenderer.Body.standing(1));
     }
     static Vector3f expectedOrigin(DisplayRenderer.Prepared p) {
         return new Vector3f((float) (p.side() + p.tx()), (float) (p.up() + p.ty()), (float) (p.tz() - p.depth()));
@@ -1373,7 +1419,7 @@ public final class MenuChecks {
         renderer.show(client.player, prepared, Map.of());
         var metadata = sent.stream().filter(WrapperPlayServerEntityMetadata.class::isInstance)
             .map(WrapperPlayServerEntityMetadata.class::cast).toList();
-        for (int i = 0; i < metadata.size(); i++) {
+        for (int i = 0; i < prepared.size(); i++) {
             var p = prepared.get(i);
             var data = metadata.get(i).getEntityMetadata();
             var q = data.stream().filter(d -> d.getIndex() == 14).findFirst();
@@ -1406,118 +1452,52 @@ public final class MenuChecks {
         } finally { ByteBufHelper.release(buffer); packet.setBuffer(null); }
     }
 
-    private static void spectator() throws Exception {
+    private static void clientInventory() throws Exception {
         Client client = new Client();
         List<PacketWrapper<?>> packets = new ArrayList<>();
-        ClientSpectator spectator = new ClientSpectator((p, packet) -> { serialize(packet); packets.add(packet); });
-        spectator.begin(client.player);
-        check(packets.size() == 1 && packets.getFirst() instanceof WrapperPlayServerChangeGameState mode
-            && mode.getReason() == WrapperPlayServerChangeGameState.Reason.CHANGE_GAME_MODE && mode.getValue() == 3,
-            "opening sends only spectator mode, with no air entity or camera packets");
-        client.mode = org.bukkit.GameMode.CREATIVE;
-        spectator.end(client.player);
-        check(packets.size() == 3 && ((WrapperPlayServerChangeGameState) packets.get(1)).getValue() == 1,
-            "close sends only current real mode and abilities, not a stale opening mode");
-        var abilities = (WrapperPlayServerPlayerAbilities) packets.get(2);
-        check(abilities.isInCreativeMode() && abilities.isFlightAllowed() && abilities.isFlying()
-            && abilities.getFlySpeed() == .05f && abilities.getFOVModifier() == .1f,
-            "real flight permissions and speed are resynchronized after spoofed spectator");
-        int count = packets.size();
-        spectator.end(client.player);
-        check(packets.size() == count, "closed spectator state cannot send further packets");
-        for (var actual : org.bukkit.GameMode.values()) {
-            client.mode = actual;
-            packets.clear();
-            spectator.begin(client.player); spectator.end(client.player);
-            int expected = switch (actual) { case SURVIVAL -> 0; case CREATIVE -> 1; case ADVENTURE -> 2; case SPECTATOR -> 3; };
-            check(packets.size() == 3 && ((WrapperPlayServerChangeGameState) packets.get(1)).getValue() == expected,
-                "current real mode restores without changing the camera: " + actual);
-            var restored = (WrapperPlayServerPlayerAbilities) packets.getLast();
-            check(restored.isInCreativeMode() == (actual == org.bukkit.GameMode.CREATIVE)
-                && restored.isFlightAllowed() == client.player.getAllowFlight()
-                && restored.isFlying() == client.player.isFlying(), "actual abilities restore for " + actual);
+        ClientInventory inventory = new ClientInventory((p, packet) -> { serialize(packet); packets.add(packet); });
+        check(!inventory.masked(client.id), "players without a menu skip inventory decoding");
+        inventory.begin(client.player);
+        check(packets.size() == 1 && packets.getFirst() instanceof WrapperPlayServerWindowItems,
+            "opening sends exactly one player-inventory packet and no game mode, rotation or ability packets");
+        var items = (WrapperPlayServerWindowItems) packets.getFirst();
+        check(items.getWindowId() == 0 && items.getItems().size() == ClientInventory.SLOTS
+            && items.getCarriedItem().map(com.github.retrooper.packetevents.protocol.item.ItemStack::isEmpty).orElse(true),
+            "the whole 46-slot player inventory is replaced and nothing is carried");
+        for (int slot = 0; slot < ClientInventory.SLOTS; slot++) {
+            var item = items.getItems().get(slot);
+            boolean held = slot >= ClientInventory.HOTBAR && slot < ClientInventory.OFFHAND;
+            check(held ? !item.isEmpty() && item.getComponent(ComponentTypes.ITEM_MODEL)
+                    .map(model -> model.getModelLocation().toString().equals("minecraft:air")).orElse(false)
+                    && item.getComponent(ComponentTypes.TOOLTIP_DISPLAY).map(t -> t.isHideTooltip()).orElse(false)
+                : item.isEmpty(), "slot " + slot + (held ? " holds the invisible non-empty item, so no arm is drawn"
+                    : " is empty, including armor and offhand"));
         }
-        {
-            AtomicInteger writes = new AtomicInteger();
-            ClientSpectator broken = new ClientSpectator((p, packet) -> {
-                if (writes.incrementAndGet() == 1) throw new IllegalStateException("send failed");
-            });
-            rejects(() -> broken.begin(client.player), "spectator setup failure is visible");
-            broken.end(client.player);
-            int finished = writes.get();
-            broken.begin(client.player); broken.end(client.player);
-            check(writes.get() == finished + 3, "failed setup cleanup permits a new spectator session");
-        }
-        AtomicInteger writes = new AtomicInteger();
-        ClientSpectator cleanup = new ClientSpectator((p, packet) -> {
-            if (writes.incrementAndGet() == 2) throw new IllegalStateException("restore mode failed");
-        });
-        cleanup.begin(client.player);
-        rejects(() -> cleanup.end(client.player), "cleanup send errors are reported");
-        check(writes.get() == 3, "mode restoration failure does not prevent ability restoration");
-        spectator.begin(client.player);
-        count = packets.size();
+        check(inventory.masked(client.id), "open menus mask later inventory updates");
+        rejects(() -> inventory.begin(client.player), "a second mask before cleanup is refused");
+        inventory.end(client.player);
+        check(!inventory.masked(client.id) && client.inventoryUpdates == 1 && packets.size() == 1,
+            "closing resyncs the real inventory once through the server, sending nothing itself");
+        inventory.end(client.player);
+        check(client.inventoryUpdates == 1, "a closed mask does not resync again");
+        ClientInventory broken = new ClientInventory((p, packet) -> { throw new IllegalStateException("send failed"); });
+        rejects(() -> broken.begin(client.player), "mask send failures are visible");
+        check(!broken.masked(client.id), "a failed mask leaves no state");
+        inventory.begin(client.player);
         client.online = false;
-        spectator.end(client.player);
-        check(packets.size() == count, "disconnect cleanup does not write to the disconnected client");
+        inventory.end(client.player);
+        check(client.inventoryUpdates == 1 && !inventory.masked(client.id),
+            "disconnect cleanup forgets the mask without writing to the client");
+        client.online = true;
+        inventory.begin(client.player);
+        inventory.forget(client.id);
+        check(!inventory.masked(client.id), "quit forgets masks");
     }
 
     private static void lookDown() throws Exception {
         Client client = new Client();
         client.eye.setYaw(37);
         client.eye.setPitch(-20);
-        List<PacketWrapper<?>> sent = new ArrayList<>();
-        long[] now = {0};
-        ClientLook look = new ClientLook((p, packet) -> { serialize(packet); sent.add(packet); }, () -> now[0]);
-        check(look.incoming(client.id, 37, -20) == null, "rotations pass through without a looked-down menu");
-        look.set(client.player, true);
-        var down = (WrapperPlayServerPlayerRotation) sent.getLast();
-        check(sent.size() == 1 && down.isRelativeYaw() && down.getYaw() == 0 && !down.isRelativePitch()
-            && down.getPitch() == 90, "look-down keeps the client yaw and sets only an absolute 90 pitch");
-        float[] echo = look.incoming(client.id, 37, 90);
-        check(echo != null && echo[0] == 37 && echo[1] == -20,
-            "the client's look-down echo reaches the server as the original view");
-        look.set(client.player, true);
-        check(sent.size() == 1 && look.down(client.id), "repeated look-down sends nothing");
-        look.set(client.player, false);
-        var back = (WrapperPlayServerPlayerRotation) sent.getLast();
-        check(sent.size() == 2 && back.isRelativeYaw() && back.getYaw() == 0 && !back.isRelativePitch()
-            && back.getPitch() == -20, "closing turns the client back to its original pitch without touching yaw");
-        echo = look.incoming(client.id, 37.5f, 89.4f);
-        check(echo != null && echo[1] == -20, "rotations sent before the restore echo still report the original view");
-        check(look.incoming(client.id, 37, -20) == null && look.incoming(client.id, 50, 10) == null,
-            "the restore echo ends rewriting so later real mouse movement passes through");
-        look.set(client.player, true);
-        look.set(client.player, false);
-        now[0] = ClientLook.RESTORE_TIMEOUT_NANOS + 1;
-        check(look.incoming(client.id, 37, 90) == null, "a missing restore echo stops rewriting after the timeout");
-        now[0] = 0;
-        look.set(client.player, true);
-        look.set(client.player, false);
-        look.set(client.player, true);
-        echo = look.incoming(client.id, 37, 90);
-        check(echo != null && echo[1] == -20 && look.down(client.id),
-            "reopening before the restore echo keeps the first original view");
-        int count = sent.size();
-        client.online = false;
-        look.set(client.player, false);
-        check(sent.size() == count && look.incoming(client.id, 37, 90) == null,
-            "disconnect cleanup forgets the view without writing to the client");
-        client.online = true;
-        look.set(client.player, true);
-        look.forget(client.id);
-        check(!look.down(client.id) && look.incoming(client.id, 37, 90) == null, "quit forgets held views");
-        check(!look.holding(client.id), "players without a held view skip rotation decoding");
-        look.set(client.player, true);
-        check(look.holding(client.id), "held players have their rotations inspected");
-        look.forget(client.id);
-        {
-            ClientLook broken = new ClientLook((p, packet) -> { throw new IllegalStateException("send failed"); });
-            rejects(() -> broken.set(client.player, true), "look-down send failures are visible");
-            check(!broken.down(client.id) && broken.incoming(client.id, 37, 90) == null,
-                "failed look-down leaves no rewriting state");
-        }
-
         Path dir = Files.createTempDirectory(root, "look-down-");
         var calibration = new Calibration.Store(dir.resolve("calibration.properties"));
         calibration.save(client.id, MAPPING);
@@ -1550,6 +1530,14 @@ public final class MenuChecks {
             near(origin.distance(expectedOrigin(p)), 0,
                 "looked-down layer keeps its camera-relative pose around the 90 degree rider point");
         }
+        var downCamera = packets.stream().filter(WrapperPlayServerSpawnEntity.class::isInstance)
+            .map(WrapperPlayServerSpawnEntity.class::cast).filter(spawn -> spawn.getEntityType() == EntityTypes.INTERACTION)
+            .reduce((x, y) -> y).orElseThrow();
+        check(downCamera.getPitch() == 90 && Math.abs(downCamera.getYaw() - client.eye.getYaw()) <= 1.41,
+            "look-down points the camera rig straight down, keeping the viewer's yaw and never rotating the player");
+        check(packets.stream().noneMatch(packet -> packet instanceof WrapperPlayServerPlayerRotation
+                || packet instanceof WrapperPlayServerChangeGameState),
+            "no rotation or game-mode packets reach the client");
         packets.clear();
         engine.tick();
         client.eye.setY(client.eye.getY() + 1);
@@ -1884,6 +1872,7 @@ public final class MenuChecks {
         final UUID id = UUID.randomUUID();
         UUID worldId = UUID.randomUUID();
         boolean online = true, permitted = true;
+        int inventoryUpdates;
         org.bukkit.GameMode mode = org.bukkit.GameMode.SURVIVAL;
         org.bukkit.Location eye = new org.bukkit.Location(null, 10, 64, 20);
         final World world = (World) Proxy.newProxyInstance(getClass().getClassLoader(), new Class[]{World.class},
@@ -1902,6 +1891,7 @@ public final class MenuChecks {
                 case "isFlying", "getAllowFlight" -> mode == org.bukkit.GameMode.CREATIVE || mode == org.bukkit.GameMode.SPECTATOR;
                 case "getFlySpeed" -> .1f;
                 case "getWalkSpeed" -> .2f;
+                case "updateInventory" -> { inventoryUpdates++; yield null; }
                 default -> defaults(method.getReturnType());
             });
     }

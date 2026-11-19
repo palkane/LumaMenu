@@ -196,6 +196,7 @@ final class LookDownChecks {
         JsonArray result = new JsonArray();
         int index = 0;
         for (var packet : packets) if (packet instanceof WrapperPlayServerEntityMetadata metadata) {
+            if (index == prepared.size()) break; // the camera rig follows the displays
             var entry = new Gson().toJsonTree(prepared.get(index)).getAsJsonObject();
             entry.addProperty("steered", steered);
             entry.add("visibleFaces", new Gson().toJsonTree(faces.get(index++)));

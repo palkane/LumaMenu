@@ -281,6 +281,7 @@ public final class NativeHitChecks {
             models(pack);
             NativePlaneChecks.run(root);
             NativeModeChecks.run(root);
+            NativeCameraRigChecks.run();
             TextLayoutChecks.run(root);
             try (var fixtures = Files.list(root.resolve("fixtures"))) {
                 for (Path path : fixtures.sorted().toList()) fixture(font(), path);

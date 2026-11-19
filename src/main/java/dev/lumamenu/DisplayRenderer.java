@@ -16,13 +16,13 @@ import com.github.retrooper.packetevents.util.Quaternion4f;
 import com.github.retrooper.packetevents.util.Vector3d;
 import com.github.retrooper.packetevents.util.Vector3f;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerCamera;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.TextColor;
-import org.bukkit.attribute.Attribute;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.joml.Quaternionf;
@@ -40,6 +40,15 @@ final class DisplayRenderer {
     private final BiConsumer<Player, PacketWrapper<?>> sender;
     /** Standing 26.3 Avatar: passenger attachment at height 1.8, eye at 1.62 (both scale with the SCALE attribute). */
     static final double RIDER_ABOVE_EYE = (double) 1.8f - (double) 1.62f;
+    /** Vanilla eye height of a scalable box ({@code EntityDimensions.defaultEyeHeight}): 0.85 of its height. */
+    static final float EYE_RATIO = .85f;
+    /** Camera pitch of looked-down pages. */
+    static final float DOWN = 90f;
+    /** The viewer's current pose: passenger attachment height and eye height above the feet, scale included. */
+    record Body(double height, double eye) {
+        static Body standing(double scale) { return new Body(1.8f * scale, 1.62f * scale); }
+        double riderAboveEye() { return height - eye; }
+    }
     private final Map<UUID, View> views = new HashMap<>();
     /** Netty-visible: the client's own SET_PASSENGERS must keep these displays mounted on the viewer. */
     private final Map<UUID, Riding> riding = new ConcurrentHashMap<>();
@@ -286,13 +295,15 @@ final class DisplayRenderer {
         if (!model.isEmpty()) new ResourceLocation(model);
     }
 
-    private final java.util.function.ToDoubleFunction<Player> playerScale;
+    private final java.util.function.Function<Player, Body> body;
 
-    DisplayRenderer(BiConsumer<Player, PacketWrapper<?>> sender) { this(sender, DisplayRenderer::attributeScale); }
-    /** {@code scale} reads the client-synced SCALE attribute; checks without a server registry inject it. */
-    DisplayRenderer(BiConsumer<Player, PacketWrapper<?>> sender, java.util.function.ToDoubleFunction<Player> scale) {
+    DisplayRenderer(BiConsumer<Player, PacketWrapper<?>> sender) {
+        this(sender, player -> new Body(player.getHeight(), player.getEyeHeight()));
+    }
+    /** {@code body} reads the pose-dependent, scaled dimensions; checks without a server entity inject them. */
+    DisplayRenderer(BiConsumer<Player, PacketWrapper<?>> sender, java.util.function.Function<Player, Body> body) {
         this.sender = sender;
-        this.playerScale = scale;
+        this.body = body;
     }
 
     void show(Player player, List<Prepared> prepared, Map<String, String> variables) {
@@ -303,17 +314,24 @@ final class DisplayRenderer {
         show(player, prepared, variables, mode, false);
     }
 
+    /**
+     * The client camera is moved onto a private two-link rig riding the viewer: a negative-height Interaction brings
+     * the attachment back to the feet and a second Interaction whose eye height equals the viewer's eye carries the
+     * camera. Vanilla smooths camera eye height toward the camera entity's, so matching it keeps the view from
+     * sliding on open and close. A non-player camera also hides the hotbar, hearts and own model, and pins the FOV
+     * modifier to 1, so speed and flying no longer move the menu.
+     */
     void show(Player player, List<Prepared> prepared, Map<String, String> variables, RenderMode mode, boolean down) {
         View previous = views.get(player.getUniqueId());
-        if (previous != null) close(previous.player);
         View view = new View(player, prepared);
         views.put(player.getUniqueId(), view);
         try {
-            double scale = playerScale.applyAsDouble(player);
-            if (!Double.isFinite(scale) || scale <= 0) scale = 1;
-            var anchor = Camera.of(player.getEyeLocation(), down).rider(scale);
+            Body pose = body.apply(player);
+            if (!Double.isFinite(pose.height) || !Double.isFinite(pose.eye) || pose.height <= 0 || pose.eye <= 0)
+                pose = Body.standing(1);
             var eye = player.getEyeLocation();
-            var spawn = new Location(eye.getX(), eye.getY() + RIDER_ABOVE_EYE * scale, eye.getZ(), 0, 0);
+            var anchor = Camera.of(eye, down).offset(pose.riderAboveEye());
+            var spawn = new Location(eye.getX(), eye.getY() + pose.riderAboveEye(), eye.getZ(), 0, 0);
             for (int i = 0; i < prepared.size(); i++) {
                 Prepared p = prepared.get(i);
                 int id = view.ids[i];
@@ -325,13 +343,31 @@ final class DisplayRenderer {
                 send(player, new WrapperPlayServerSpawnEntity(id, UUID.randomUUID(), type, spawn, 0, 0, new Vector3d(0, 0, 0)));
                 send(player, new WrapperPlayServerEntityMetadata(id, metadata(p, variables, mode, anchor)));
             }
+            var feet = new Location(eye.getX(), eye.getY() - pose.eye, eye.getZ(), eye.getYaw(),
+                down ? DOWN : eye.getPitch());
+            send(player, new WrapperPlayServerSpawnEntity(view.foot, UUID.randomUUID(), EntityTypes.INTERACTION, spawn, 0, 0, new Vector3d(0, 0, 0)));
+            send(player, new WrapperPlayServerEntityMetadata(view.foot, interaction((float) -pose.height)));
+            send(player, new WrapperPlayServerSpawnEntity(view.camera, UUID.randomUUID(), EntityTypes.INTERACTION, feet, 0, 0, new Vector3d(0, 0, 0)));
+            send(player, new WrapperPlayServerEntityMetadata(view.camera, interaction((float) (pose.eye / EYE_RATIO))));
             int vehicle = player.getEntityId();
-            riding.put(player.getUniqueId(), new Riding(vehicle, view.ids.clone()));
-            send(player, new WrapperPlayServerSetPassengers(vehicle, compose(realPassengers(player), view.ids)));
+            int[] mounted = view.mounted();
+            riding.put(player.getUniqueId(), new Riding(vehicle, mounted));
+            send(player, new WrapperPlayServerSetPassengers(vehicle, compose(realPassengers(player), mounted)));
+            send(player, new WrapperPlayServerSetPassengers(view.foot, new int[]{view.camera}));
+            send(player, new WrapperPlayServerCamera(view.camera));
         } catch (RuntimeException error) {
             close(player);
+            if (previous != null && previous != view) destroy(previous);
             throw error;
         }
+        // The new rig already holds the camera, so the old one goes without a flicker back to the player.
+        if (previous != null) destroy(previous);
+    }
+
+    /** Invisible, unpickable-in-practice box: width 0, the given (possibly negative) height. */
+    private static List<EntityData<?>> interaction(float height) {
+        return List.of(new EntityData<>(8, EntityDataTypes.FLOAT, 0f),
+            new EntityData<>(9, EntityDataTypes.FLOAT, height));
     }
 
     /** Vanilla and other plugins' passengers stay; this menu's displays are appended exactly once. */
@@ -358,11 +394,6 @@ final class DisplayRenderer {
     private static int[] realPassengers(Player player) {
         List<Entity> passengers = player.getPassengers();
         return passengers == null ? new int[0] : passengers.stream().mapToInt(Entity::getEntityId).toArray();
-    }
-
-    private static double attributeScale(Player player) {
-        var attribute = player.getAttribute(Attribute.SCALE);
-        return attribute == null ? 1 : attribute.getValue();
     }
 
     void calibration(Player player, Calibration.Attempt attempt) {
@@ -401,8 +432,12 @@ final class DisplayRenderer {
         if (view == null || view.player != player) return;
         views.remove(player.getUniqueId());
         riding.remove(player.getUniqueId());
-        if (player.isOnline() && view.ids.length > 0)
-            send(player, new WrapperPlayServerDestroyEntities(view.ids));
+        if (!player.isOnline()) return;
+        try { send(player, new WrapperPlayServerCamera(player.getEntityId())); }
+        finally { destroy(view); }
+    }
+    private void destroy(View view) {
+        if (view.player.isOnline()) send(view.player, new WrapperPlayServerDestroyEntities(view.all()));
     }
     boolean active(UUID player) { return views.containsKey(player); }
     private void send(Player player, PacketWrapper<?> packet) { sender.accept(player, packet); }
@@ -471,6 +506,8 @@ final class DisplayRenderer {
         final List<Prepared> prepared;
         final int[] ids;
         final String[] texts;
+        /** Camera rig: {@code foot} rides the viewer, {@code camera} rides {@code foot}. */
+        final int foot = IDS.decrementAndGet(), camera = IDS.decrementAndGet();
         View(Player player, List<Prepared> prepared) {
             this.player = player;
             this.prepared = prepared;
@@ -478,18 +515,28 @@ final class DisplayRenderer {
             texts = new String[prepared.size()];
             for (int i = 0; i < ids.length; i++) ids[i] = IDS.decrementAndGet();
         }
+        int[] mounted() {
+            int[] result = Arrays.copyOf(new int[]{foot}, ids.length + 1);
+            System.arraycopy(ids, 0, result, 1, ids.length);
+            return result;
+        }
+        int[] all() {
+            int[] result = Arrays.copyOf(ids, ids.length + 2);
+            result[ids.length] = foot;
+            result[ids.length + 1] = camera;
+            return result;
+        }
     }
 
     record Camera(double sp, double cp) {
-        /** A looked-down client keeps its yaw while the server still holds the original pitch. */
+        /** Looked-down pages point the camera rig straight down; the player's own view is never touched. */
         static Camera of(org.bukkit.Location eye, boolean down) {
-            double pitch = Math.toRadians(down ? ClientLook.DOWN : eye.getPitch());
+            double pitch = Math.toRadians(down ? DOWN : eye.getPitch());
             return new Camera(Math.sin(pitch), Math.cos(pitch));
         }
-        /** Passenger point minus eye in the camera-centered billboard frame (right, up, toward the eye). */
-        org.joml.Vector3d rider(double scale) {
-            double above = RIDER_ABOVE_EYE * scale;
-            return new org.joml.Vector3d(0, above * cp, above * sp);
-        }
+        /** Passenger point {@code above} the eye, in the camera-centered billboard frame (right, up, toward the eye). */
+        org.joml.Vector3d offset(double above) { return new org.joml.Vector3d(0, above * cp, above * sp); }
+        /** Standing passenger point of a player with the given SCALE. */
+        org.joml.Vector3d rider(double scale) { return offset(RIDER_ABOVE_EYE * scale); }
     }
 }

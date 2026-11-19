@@ -6,7 +6,8 @@ import com.github.retrooper.packetevents.event.PacketListenerPriority;
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
-import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerFlying;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetSlot;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerWindowItems;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers;
 import io.papermc.paper.connection.PlayerGameConnection;
 import io.papermc.paper.dialog.Dialog;
@@ -43,11 +44,10 @@ import static dev.lumamenu.LumaMenuApi.Reason;
 public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCompleter, CommandExecutor {
     private MenuEngine engine;
     private PacketListenerAbstract dialogMonitor;
-    private PacketListenerAbstract lookGuard;
+    private PacketListenerAbstract inventoryGuard;
     private PacketListenerAbstract riderGuard;
     private Path layouts;
-    private ClientSpectator spectator;
-    private ClientLook look;
+    private ClientInventory inventory;
     private final OwnDialogs ownDialogs = new OwnDialogs();
     private Settings settings;
 
@@ -85,9 +85,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             Path pack = MenuResources.export(data.resolve("resourcepack"), settings.hideWarning());
             DisplayRenderer renderer = new DisplayRenderer((player, packet) ->
                 PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
-            spectator = new ClientSpectator((player, packet) ->
-                PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
-            look = new ClientLook((player, packet) ->
+            inventory = new ClientInventory((player, packet) ->
                 PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
             engine = new MenuEngine(this, new Platform(), renderer, calibration, cache, state,
                 new RenderPreferences(data.resolve("render-modes.properties")));
@@ -96,7 +94,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             Objects.requireNonNull(getCommand("lumamenu")).setTabCompleter(this);
             Bukkit.getServicesManager().register(LumaMenuApi.class, engine, this, ServicePriority.Normal);
             registerDialogMonitor();
-            registerLookGuard();
+            registerInventoryGuard();
             registerRiderGuard(renderer);
             Bukkit.getScheduler().runTaskTimer(this, engine::tick, 1, 1);
             getLogger().info("LumaMenu ready; Paper/Leaf26.3 protocol777. Merge pack: " + pack);
@@ -109,7 +107,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     @Override public void onDisable() {
         if (engine != null) engine.closeAll(Reason.PLUGIN_DISABLED);
         if (dialogMonitor != null) PacketEvents.getAPI().getEventManager().unregisterListener(dialogMonitor);
-        if (lookGuard != null) PacketEvents.getAPI().getEventManager().unregisterListener(lookGuard);
+        if (inventoryGuard != null) PacketEvents.getAPI().getEventManager().unregisterListener(inventoryGuard);
         if (riderGuard != null) PacketEvents.getAPI().getEventManager().unregisterListener(riderGuard);
         Bukkit.getServicesManager().unregisterAll(this);
     }
@@ -228,7 +226,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     @EventHandler public void quit(PlayerQuitEvent event) {
         engine.close(event.getPlayer(), Reason.PLAYER_QUIT, false);
         engine.forget(event.getPlayer().getUniqueId());
-        look.forget(event.getPlayer().getUniqueId());
+        inventory.forget(event.getPlayer().getUniqueId());
         ownDialogs.clear(event.getPlayer().getUniqueId());
     }
     @EventHandler public void world(PlayerChangedWorldEvent event) { engine.close(event.getPlayer(), Reason.WORLD_CHANGED, true); }
@@ -279,25 +277,29 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         PacketEvents.getAPI().getEventManager().registerListener(dialogMonitor);
     }
 
-    private void registerLookGuard() {
-        // Runs first so the server and later listeners only ever see the player's original view.
-        lookGuard = new PacketListenerAbstract(PacketListenerPriority.LOWEST) {
-            @Override public void onPacketReceive(PacketReceiveEvent event) {
-                if (event.getPacketType() != PacketType.Play.Client.PLAYER_ROTATION
-                    && event.getPacketType() != PacketType.Play.Client.PLAYER_POSITION_AND_ROTATION) return;
+    private void registerInventoryGuard() {
+        // Last, so whatever other plugins send still reaches the client once the menu closes and resyncs.
+        inventoryGuard = new PacketListenerAbstract(PacketListenerPriority.HIGHEST) {
+            @Override public void onPacketSend(PacketSendEvent event) {
+                var type = event.getPacketType();
+                if (type != PacketType.Play.Server.WINDOW_ITEMS && type != PacketType.Play.Server.SET_SLOT
+                    && type != PacketType.Play.Server.SET_PLAYER_INVENTORY
+                    && type != PacketType.Play.Server.SET_CURSOR_ITEM) return;
                 UUID id = event.getUser().getUUID();
-                if (id == null || !look.holding(id)) return;
-                var movement = new WrapperPlayClientPlayerFlying(event);
-                var location = movement.getLocation();
-                float[] view = look.incoming(id, location.getYaw(), location.getPitch());
-                if (view == null) return;
-                location.setYaw(view[0]);
-                location.setPitch(view[1]);
-                movement.setLocation(location);
-                event.markForReEncode(true);
+                if (id == null || !inventory.masked(id) || event.isCancelled()) return;
+                if (type == PacketType.Play.Server.WINDOW_ITEMS) {
+                    var packet = new WrapperPlayServerWindowItems(event);
+                    if (packet.getWindowId() != 0) return;
+                    packet.setItems(ClientInventory.hidden());
+                    packet.setCarriedItem(com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY);
+                    event.markForReEncode(true);
+                } else if (type == PacketType.Play.Server.SET_SLOT) {
+                    int window = new WrapperPlayServerSetSlot(event).getWindowId();
+                    if (window == 0 || window == -1 || window == -2) event.setCancelled(true);
+                } else event.setCancelled(true);
             }
         };
-        PacketEvents.getAPI().getEventManager().registerListener(lookGuard);
+        PacketEvents.getAPI().getEventManager().registerListener(inventoryGuard);
     }
 
     private void registerRiderGuard(DisplayRenderer renderer) {
@@ -319,17 +321,14 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
 
     private final class Platform implements MenuEngine.Host {
         @Override public boolean cornerClose() { return settings.cornerClose(); }
-        @Override public void begin(Player player) { spectator.begin(player); }
+        @Override public void begin(Player player) { inventory.begin(player); }
         @Override public void end(Player player) {
             ownDialogs.clear(player.getUniqueId());
-            try { look.set(player, false); }
-            finally { spectator.end(player); }
+            inventory.end(player);
         }
         @Override public boolean look(Player player, boolean down) {
             // Nether level lights point in opposite directions, so looking down cannot even out the faces.
-            boolean applied = down && player.getWorld().getEnvironment() != org.bukkit.World.Environment.NETHER;
-            look.set(player, applied);
-            return applied;
+            return down && player.getWorld().getEnvironment() != org.bukkit.World.Environment.NETHER;
         }
         @Override public void requireMain() {
             if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("LumaMenu API仅供服务器主线程调用");
