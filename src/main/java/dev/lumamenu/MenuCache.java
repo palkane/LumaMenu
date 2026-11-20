@@ -8,6 +8,9 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -15,6 +18,18 @@ final class MenuCache {
     private static final int FORMAT = 5;
     private static final Gson JSON = new Gson();
     private final Path file;
+    /**
+     * Every disk write runs on this one thread, in order, so a slow background write of an older state can never land
+     * after a newer one (a reload's). Writing and reading back a cache can take seconds, so it never runs on the server
+     * thread unless the caller explicitly waits (reload). Player profiles are not part of it; see PlayerProfiles.
+     */
+    private final ExecutorService writer = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "LumaMenu-cache-writer");
+        thread.setDaemon(true);
+        return thread;
+    });
+    /** The newest state waiting for a background write; older queued ones are skipped. */
+    private final AtomicReference<State> pending = new AtomicReference<>();
 
     record State(int format, Map<String, Layouts.Page> pages,
                  Map<String, Map<String, List<DisplayRenderer.Prepared>>> profiles,
@@ -129,6 +144,11 @@ final class MenuCache {
         for (var mapping : mappings)
             profiles.computeIfAbsent(mapping.key(), key -> prepareProfile(pages, mapping));
         return new State(FORMAT, pages, profiles, step, null);
+    }
+    /** The compiled pages without any player's profile: what is kept on disk (profiles live in memory only). */
+    static State pagesOnly(State state) {
+        if (state.profiles.isEmpty()) return state;
+        return new State(FORMAT, state.pages, Map.of(), state.rotationHitStep, Map.of(), Map.of(), Map.of(), Map.of());
     }
     static State withMapping(State state, Calibration.Mapping mapping) {
         if (state.profiles.containsKey(mapping.key())) return state;
@@ -278,7 +298,60 @@ final class MenuCache {
     }
 
     boolean exists() { return Files.isRegularFile(file); }
+
+    /** Writes on the background thread and waits for it; any older background write still queued is dropped. */
     void save(State state) throws IOException {
+        Objects.requireNonNull(state);
+        pending.set(null);
+        try { writer.submit(() -> { write(state); return null; }).get(); }
+        catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("缓存写入被中断", error);
+        } catch (ExecutionException error) {
+            if (error.getCause() instanceof IOException io) throw io;
+            if (error.getCause() instanceof RuntimeException runtime) throw runtime;
+            throw new IOException(error.getCause());
+        } catch (RejectedExecutionException error) { throw new IOException("缓存写入线程已关闭", error); }
+    }
+
+    /**
+     * Queues a write without waiting: the caller keeps using {@code state} from memory. When several are queued only
+     * the newest is written; {@code failed} gets write errors on the writer thread (the last good disk cache stays).
+     */
+    void saveLater(State state, Consumer<Throwable> failed) {
+        Objects.requireNonNull(state);
+        Objects.requireNonNull(failed);
+        if (pending.getAndSet(state) != null) return;
+        try {
+            writer.execute(() -> {
+                State latest = pending.getAndSet(null);
+                if (latest == null) return;
+                try { write(latest); }
+                catch (Throwable error) { failed.accept(error); }
+            });
+        } catch (RejectedExecutionException error) {
+            pending.set(null);
+            failed.accept(error);
+        }
+    }
+
+    /** The writer thread, for checks that need to hold it busy. */
+    ExecutorService writer() { return writer; }
+
+    /** Waits for queued writes. */
+    void flush() throws InterruptedException {
+        try { writer.submit(() -> {}).get(); }
+        catch (ExecutionException | RejectedExecutionException ignored) { /* nothing left to wait for */ }
+    }
+
+    /** Finishes queued writes (plugin disable), then refuses new ones. */
+    void close(long timeoutSeconds) throws InterruptedException {
+        writer.shutdown();
+        if (!writer.awaitTermination(timeoutSeconds, TimeUnit.SECONDS))
+            throw new IllegalStateException("LumaMenu缓存写入超时，磁盘保留上一份完整缓存");
+    }
+
+    private void write(State state) throws IOException {
         Files.createDirectories(file.toAbsolutePath().getParent());
         Path temp = Files.createTempFile(file.toAbsolutePath().getParent(), "compiled-", ".tmp");
         try {

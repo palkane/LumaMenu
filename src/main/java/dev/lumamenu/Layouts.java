@@ -338,8 +338,11 @@ final class Layouts {
                 cornerClose, openEvents, closeEvents, file, null, null, null, null, null, null, null, null, null);
         }
         String message(String key) { return messages.getOrDefault(key, key); }
-        /** DialogMenu {@code close-with-escape}: Esc may close the corner-× Dialog (noticed by the player turning). */
-        boolean closeWithEscape() { return Boolean.TRUE.equals(escape); }
+        /**
+         * DialogMenu {@code close-with-escape}: Esc may close the corner-× Dialog (noticed by the player turning).
+         * Unset on the page and its layout file: the server's {@code close-with-escape} setting.
+         */
+        boolean closeWithEscape(boolean fallback) { return escape == null ? fallback : escape; }
         /** Canvas shift of every move (x, y pairs) for the given expansion; null when nothing moves. */
         double[] shifts(java.util.function.UnaryOperator<String> values) {
             if (moves.isEmpty()) return null;

@@ -3,6 +3,11 @@
 # false: 恢复原生底部“关闭”按钮和 Esc；底部栏约占 33 高，小窗口可能滚动。
 corner-close: true
 
+# 右上角 × 页面是否也允许 Esc 关闭（默认开启）；不占任何点击格子。页面或布局文件写 close-with-escape: false 可单独关闭。
+# Esc 关闭 Dialog 不会通知服务器，插件在显示后 5 tick 起按玩家转动视角超过 1° 判定已关闭；关闭后到转动视角前菜单画面会残留。
+# corner-close: false 的原生关闭页本身就支持 Esc，不受此项影响。修改后执行 /lumamenu reload。
+close-with-escape: true
+
 # 导出资源包时隐藏顶部警告图标，默认开启；修改后 reload/export 并按 CE 流程重新合包。
 # 覆盖同资源包内所有 Dialog 的三个警告图标，原生点击、悬停提示和顶部占位仍存在。
 # 不修改共用 GUI shader，避免隐藏白框时影响其他界面。

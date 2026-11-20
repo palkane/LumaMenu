@@ -51,10 +51,12 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     private DisplayRenderer renderer;
     private final OwnDialogs ownDialogs = new OwnDialogs();
     private Settings settings;
+    private MenuCache cache;
     /** Players already offered the join calibration this login. */
     private final Set<UUID> joinPrompted = new HashSet<>();
 
-    record Settings(boolean cornerClose, boolean hideWarning, int rotationHitStep, boolean calibrateOnJoin) {}
+    record Settings(boolean cornerClose, boolean hideWarning, int rotationHitStep, boolean calibrateOnJoin,
+                    boolean closeWithEscape) {}
 
     @Override public void onEnable() {
         try {
@@ -77,17 +79,18 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                     if (!Files.exists(data.resolve(name))) saveResource(name, false);
                 }
             Calibration.Store calibration = new Calibration.Store(data.resolve("calibration.properties"));
-            MenuCache cache = new MenuCache(data.resolve("cache/compiled.json.gz"));
+            cache = new MenuCache(data.resolve("cache/compiled.json.gz"));
             MenuCache.State state;
             if (cache.exists()) {
-                state = cache.read();
-                for (var mapping : calibration.all()) state = MenuCache.withMapping(state, mapping);
-                // Also persist additive hit-cache upgrades; no coordinate compilation on open.
-                cache.save(state);
-                getLogger().info("Restored " + state.pages().size() + " compiled pages, "
-                    + state.profiles().size() + " calibrated profiles; no YAML recompilation.");
+                MenuCache.State restored = cache.read();
+                // Player profiles are no longer kept on disk; older caches lose theirs (rewritten in the background).
+                state = MenuCache.pagesOnly(restored);
+                if (state != restored)
+                    cache.saveLater(state, error -> getLogger().warning("LumaMenu缓存后台保存失败: " + error));
+                getLogger().info("Restored " + state.pages().size() + " compiled pages; no YAML recompilation."
+                    + " Player profiles are built in memory when players join.");
             } else {
-                state = MenuCache.compile(Layouts.load(layouts), calibration.all(), settings.rotationHitStep());
+                state = MenuCache.compile(Layouts.load(layouts), List.of(), settings.rotationHitStep());
                 cache.save(state);
                 getLogger().info("Compiled and saved " + state.pages().size() + " initial pages.");
             }
@@ -107,6 +110,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             registerInventoryGuard();
             registerRiderGuard(renderer);
             Bukkit.getScheduler().runTaskTimer(this, engine::tick, 1, 1);
+            Bukkit.getOnlinePlayers().forEach(engine::warm);
             getLogger().info("LumaMenu ready; Paper/Leaf26.3 protocol777. Merge pack: " + pack);
         } catch (Exception error) {
             getLogger().log(Level.SEVERE, "LumaMenu startup failed; existing files retained", error);
@@ -126,11 +130,19 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     public LumaMenuApi getMenuApi() { return engine; }
 
     @Override public void onDisable() {
-        if (engine != null) engine.closeAll(Reason.PLUGIN_DISABLED);
+        if (engine != null) {
+            engine.closeAll(Reason.PLUGIN_DISABLED);
+            engine.shutdown();
+        }
         if (dialogMonitor != null) PacketEvents.getAPI().getEventManager().unregisterListener(dialogMonitor);
         if (inventoryGuard != null) PacketEvents.getAPI().getEventManager().unregisterListener(inventoryGuard);
         if (riderGuard != null) PacketEvents.getAPI().getEventManager().unregisterListener(riderGuard);
         Bukkit.getServicesManager().unregisterAll(this);
+        if (cache != null) {
+            try { cache.close(60); }
+            catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+            catch (IllegalStateException error) { getLogger().warning(error.getMessage()); }
+        }
     }
 
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -146,6 +158,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                         if (args.length == 2) {
                             String file = args[1].replaceFirst("\\.yml$", "");
                             engine.reloadFile(layouts, file);
+                            Bukkit.getOnlinePlayers().forEach(engine::warm);
                             exportPack();
                             sender.sendMessage("LumaMenu：已重读 " + file + ".yml，共 " + engine.pages().size()
                                 + " 页，其他布局沿用已编译版本，" + (System.nanoTime() - start) / 1_000_000 + "ms");
@@ -155,10 +168,11 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                         candidate.load(getDataFolder().toPath().resolve("config.yml").toFile());
                         Settings next = readSettings(candidate);
                         engine.reload(layouts, next.rotationHitStep());
+                        Bukkit.getOnlinePlayers().forEach(engine::warm);
                         settings = next;
                         exportPack();
                         sender.sendMessage("LumaMenu：已编译并保存 " + engine.pages().size() + " 页 / "
-                            + engine.profileCount() + " 个校准映射，rotation-hit-step=" + engine.rotationHitStep()
+                            + engine.profileCount() + " 名在线玩家缓存后台重建，rotation-hit-step=" + engine.rotationHitStep()
                             + "，" + (System.nanoTime() - start) / 1_000_000 + "ms");
                     }
                     case "status" -> sender.sendMessage("LumaMenu " + getPluginMeta().getVersion()
@@ -260,6 +274,8 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         Runnable action = () -> engine.click(connection.getPlayer(), event.getIdentifier().value());
         if (Bukkit.isPrimaryThread()) action.run(); else Bukkit.getScheduler().runTask(this, action);
     }
+    /** A calibrated player's profile is built in the background right away; quitting releases it. */
+    @EventHandler public void join(PlayerJoinEvent event) { engine.warm(event.getPlayer()); }
     @EventHandler public void quit(PlayerQuitEvent event) {
         engine.close(event.getPlayer(), Reason.PLAYER_QUIT, false);
         engine.forget(event.getPlayer().getUniqueId());
@@ -371,6 +387,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
 
     private final class Platform implements MenuEngine.Host {
         @Override public boolean cornerClose() { return settings.cornerClose(); }
+        @Override public boolean closeWithEscape() { return settings.closeWithEscape(); }
         @Override public void begin(Player player) { inventory.begin(player); }
         @Override public void end(Player player) {
             ownDialogs.clear(player.getUniqueId());
@@ -540,10 +557,11 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     }
 
     static Settings readSettings(org.bukkit.configuration.ConfigurationSection config) {
-        for (String key : List.of("corner-close", "hide-warning", "calibrate-on-join"))
+        for (String key : List.of("corner-close", "hide-warning", "calibrate-on-join", "close-with-escape"))
             if (config.contains(key) && !config.isBoolean(key))
                 throw new IllegalArgumentException(key + "需要true/false");
         return new Settings(config.getBoolean("corner-close", true), config.getBoolean("hide-warning", true),
-            HitGeometry.step(config.get("rotation-hit-step")), config.getBoolean("calibrate-on-join", true));
+            HitGeometry.step(config.get("rotation-hit-step")), config.getBoolean("calibrate-on-join", true),
+            config.getBoolean("close-with-escape", true));
     }
 }

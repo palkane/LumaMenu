@@ -2,11 +2,13 @@
 # 跟随玩家的布局会为每个非默认主题各编译一份页面（ID 记为 页面~主题）。label 为玩家看到的名字。
 # 颜色在任何 color 字段里写 '@名字'（需加引号）。每个主题都从内置 rift 的颜色开始，这里只写要改的。
 # 可选装饰色（只在写了的主题里画）：panel-inset 面板内 3 单位处的内框线，header-gem 标题栏线中央的小方块，card-stripe 信息卡左侧 2 单位竖条。
+# click-sound：点击菜单按钮时播放的声音，格式同布局动作 sound:（声音ID[-音量[-音调]]）；按钮自己带 sound: 动作时不重复播放；留空为无声。
 # corner：images/ 下的路径前缀，面板四角依次用 <前缀>-tl/-tr/-bl/-br.png，空则不画角饰；corner-size 为显示边长（单位）。
 default: rift
 themes:
   rift:
     label: 界隙
+    click-sound: block.amethyst_block.step-0.8-1.2
     corner: theme/rift/corner
     corner-size: 7
     colors:
@@ -33,9 +35,10 @@ themes:
       card-border: '#DCD3F5'
       track: '#E2DAF7'
       slot-empty: '#C9B9F7'
-  # 方案 B“法师羊皮纸”：暖白纸面、铜框（外晕深铜 + 描边浅铜）、四角镶紫晶。
+  # 方案 B“法师羊皮纸”：暖白纸面、铜框（外晕深铜 + 描边浅铜）、四角镶紫晶；选中/主按钮用深铜皮革色而非界隙紫。
   parchment:
     label: 羊皮纸
+    click-sound: item.book.page_turn-0.8-1
     corner: theme/parchment/corner
     corner-size: 8
     colors:
@@ -48,11 +51,11 @@ themes:
       title: '#4A3420'
       text: '#4A3B2A'
       muted: '#9A8668'
-      accent: '#8A63E0'
-      accent-dark: '#5E3BB8'
-      accent-light: '#B79CF5'
-      accent-text: '#5E3BB8'
-      on-accent: '#FFFFFF'
+      accent: '#7A5A34'
+      accent-dark: '#5A3F22'
+      accent-light: '#D4B47C'
+      accent-text: '#7A4E22'
+      on-accent: '#FBF3DF'
       button: '#FCF7EA'
       button-border: '#D6C196'
       button-shade: '#E6D7B5'

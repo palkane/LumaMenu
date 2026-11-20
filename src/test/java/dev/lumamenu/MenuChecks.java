@@ -61,6 +61,7 @@ public final class MenuChecks {
         compiler();
         calibration();
         cacheAndSessions();
+        playerProfiles();
         renderModes();
         rotatedSessions();
         interactions();
@@ -85,6 +86,51 @@ public final class MenuChecks {
         ModelFitChecks.run(root);
         LookDownChecks.run(Path.of("build/native-evidence"));
         System.out.println("LumaMenu checks passed: " + checks + "; native fixtures: build/native-evidence");
+    }
+
+    /** In-memory player profiles: identical to the precomputed cache, built in the background, released on demand. */
+    private static void playerProfiles() throws Exception {
+        var pages = demo();
+        var mapping = new Calibration.Mapping(213.4, 213.4, 226.3, 88.7);
+        var state = MenuCache.compile(pages, List.of(mapping), 2);
+        var warnings = new ArrayList<String>();
+        var profiles = new PlayerProfiles(pages, 2, 0, warnings::add);
+        UUID player = UUID.randomUUID();
+        for (var page : pages.values())
+            for (RenderMode mode : RenderMode.values())
+                for (boolean down : new boolean[]{false, true}) {
+                    var entry = profiles.get(player, mapping, page, mode, down);
+                    check(entry.prepared().equals(state.prepared(mapping, page.id(), mode, down))
+                        && entry.hit().equals(state.hit(mapping, page.id(), mode, down)),
+                        "memory profile equals the precomputed cache: " + page.id() + " " + mode + " down=" + down);
+                }
+        UUID other = UUID.randomUUID();
+        profiles.warm(other, mapping);
+        for (int wait = 0; wait < 500 && !profiles.warmed(other); wait++) Thread.sleep(10);
+        check(profiles.warmed(other) && warnings.isEmpty(), "background builder finishes every page and mode");
+        var first = profiles.get(other, mapping, pages.get("demo"), RenderMode.ENHANCED, false);
+        check(first == profiles.get(other, mapping, pages.get("demo"), RenderMode.ENHANCED, false),
+            "a built entry is reused, not rebuilt");
+        check(profiles.count() == 2, "one profile per player");
+        profiles.forget(other);
+        check(profiles.count() == 1 && !profiles.warmed(other), "quitting releases the player's profile");
+        var moved = new Calibration.Mapping(240, 240, 220, 95);
+        var after = profiles.get(player, moved, pages.get("demo"), RenderMode.COMPATIBLE, false);
+        check(after.prepared().equals(state.prepared(mapping, "demo", RenderMode.COMPATIBLE)) == false
+            && profiles.count() == 1, "a new calibration replaces the old profile instead of reusing it");
+        var before = profiles.get(player, moved, pages.get("demo"), RenderMode.COMPATIBLE, false);
+        profiles.pages(pages, 2);
+        check(profiles.count() == 0 && before != profiles.get(player, moved, pages.get("demo"), RenderMode.COMPATIBLE, false),
+            "reload drops every profile and builds fresh entries");
+        profiles.close();
+        check(profiles.count() == 0, "shutdown releases everything");
+        var stripped = MenuCache.pagesOnly(state);
+        check(stripped.profiles().isEmpty() && stripped.pages().equals(state.pages()),
+            "an older cache keeps its pages and loses the player profiles");
+        var disk = new MenuCache(Files.createTempDirectory(root, "pages-only-").resolve("compiled.json.gz"));
+        disk.save(stripped);
+        check(disk.read().equals(stripped), "a pages-only cache survives the disk round trip");
+        disk.close(10);
     }
 
     private static Map<String, Layouts.Page> demo() throws Exception {
@@ -976,7 +1022,27 @@ public final class MenuChecks {
                 // On a 327-high screen the tall body is pinned to the bottom.
                 int y = target < 2 ? (int) point.y()
                     : (int) Math.floor(Calibration.PROBE_TOP + point.y() - 10 - (327 - 23 - 9 * rows));
-                engine.click(client.player, clickAt(host.body(client.id), (int) point.x(), y));
+                if (target == 3 && round == 2) {
+                    // The finishing click must not wait for the multi-second disk cache write: hold the writer busy
+                    // (released by a watchdog after 10 s) and the click still returns at once.
+                    var hold = new java.util.concurrent.CountDownLatch(1);
+                    cache.writer().execute(() -> {
+                        try { hold.await(); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    });
+                    var watchdog = new Thread(() -> {
+                        try { Thread.sleep(10_000); } catch (InterruptedException ignored) { return; }
+                        hold.countDown();
+                    });
+                    watchdog.setDaemon(true);
+                    watchdog.start();
+                    long started = System.nanoTime();
+                    engine.click(client.player, clickAt(host.body(client.id), (int) point.x(), y));
+                    long waited = (System.nanoTime() - started) / 1_000_000;
+                    check(waited < 5_000, "finishing a calibration does not wait for the disk cache write (" + waited + " ms)");
+                    hold.countDown();
+                    watchdog.interrupt();
+                    cache.flush();
+                } else engine.click(client.player, clickAt(host.body(client.id), (int) point.x(), y));
             }
         }
         check(new Calibration.Store(dir.resolve("calibration.properties")).get(client.id) != null
@@ -984,7 +1050,10 @@ public final class MenuChecks {
         check(new Calibration.Store(dir.resolve("calibration.properties")).frame(client.id).screen() > 0
             && Math.abs(align.get(client.id).oy() - (MAPPING.oy() + .5 + Calibration.PROBE_TOP
                 - align.frame(client.id).top())) < 1, "a new calibration is saved as v4 with its frame offset");
-        check(cache.read().profiles().containsKey(align.get(client.id).key()), "calibration saves precomputed profile for next opens");
+        check(cache.read().profiles().isEmpty(), "player profiles are never written to the disk cache");
+        for (int wait = 0; wait < 500 && !engine.warmed(client.id); wait++) Thread.sleep(10);
+        check(engine.warmed(client.id) && engine.profileCount() == 1,
+            "calibration builds the player's profile in memory in the background");
         check(host.errors.isEmpty(), "normal navigation/calibration reports no operation failures");
         check(host.begins == host.ends, "all session cleanup paths end their camera exactly once");
         var own = engine.open(owner.plugin, client.player, "demo", Map.of(), callbacks::add, closed::add);
@@ -1486,6 +1555,8 @@ public final class MenuChecks {
                   mark: {type: text, content: riftmark, visible-if: '{rift-on}', offset: {x: 226, y: 50}}
                   paper: {type: button, style: theme, content: P, width: 60, height: 20, offset: {x: 150, y: 120}, actions: 'theme: parchment'}
                   frost: {type: button, style: theme, content: R, width: 60, height: 20, offset: {x: 300, y: 120}, actions: 'theme: rift'}
+                  plain: {type: button, style: theme, content: N, width: 40, height: 20, offset: {x: 226, y: 70}, actions: 'tell: n'}
+                  loud: {type: button, style: theme, content: L, width: 40, height: 20, offset: {x: 300, y: 70}, actions: ['sound: entity.cat.ambient', 'tell: l']}
             """);
         Files.writeString(layouts.resolve("fixed.yml"), "id: fixed\ntheme: rift\nfrontend: {t: {type: text, content: x}}\n");
         var pages = Layouts.load(layouts);
@@ -1520,6 +1591,12 @@ public final class MenuChecks {
         engine.open(owner.plugin, client.player, "main", Map.of(), a -> {}, c -> {});
         check(engine.theme(client.player).equals("rift") && background.test(0xFFF8F6FD) && shown.apply("T=rift")
             && shown.apply("riftmark"), "players without a choice see the default theme and {theme}");
+        engine.click(client.player, clickAt(host.body(client.id), 226, 70));
+        check(host.sounds.getLast().equals("block.amethyst_block.step-0.8-1.2"), "a rift click sounds like stepping on amethyst");
+        int sounds = host.sounds.size();
+        engine.click(client.player, clickAt(host.body(client.id), 300, 70));
+        check(host.sounds.size() == sounds + 1 && host.sounds.getLast().equals("entity.cat.ambient"),
+            "a control with its own sound: action plays only that one");
         sent.clear();
         engine.click(client.player, clickAt(host.body(client.id), 150, 120));
         check(engine.theme(client.player).equals("parchment") && background.test(0xFFF4EAD3) && shown.apply("T=parchment")
@@ -1527,6 +1604,15 @@ public final class MenuChecks {
             && "main".equals(engine.page(client.player)), "theme: redraws the open page in the chosen theme, same page ID");
         check(Files.readString(dir.resolve("player-themes.properties")).contains(client.id + "=parchment"),
             "the choice is saved per player");
+        engine.click(client.player, clickAt(host.body(client.id), 226, 70));
+        check(host.sounds.getLast().equals("item.book.page_turn-0.8-1"), "a parchment click sounds like turning a page");
+        var custom = new org.bukkit.configuration.file.YamlConfiguration();
+        custom.loadFromString("themes:\n  quiet: {label: Q}\n  rift: {label: R2}\n");
+        var parsed = Themes.parse(custom);
+        check(parsed.get("quiet").clickSound().isEmpty() && parsed.get("rift").clickSound().equals(Themes.RIFT_CLICK),
+            "a new theme is silent unless it names a sound; rift keeps its amethyst step");
+        custom.loadFromString("themes:\n  bad: {click-sound: 'Not A Sound'}\n");
+        rejects(() -> Themes.parse(custom), "an invalid click-sound is rejected");
         sent.clear();
         check(engine.refresh(client.player) && sent.stream().noneMatch(WrapperPlayServerSpawnEntity.class::isInstance),
             "refresh sends only changes and respawns nothing");
@@ -1949,9 +2035,21 @@ public final class MenuChecks {
                 frontend:
                   t: {type: text, content: x, offset: {x: 100, y: 60}}
             """);
+        Files.writeString(layouts.resolve("unset.yml"), """
+            schema-version: 3
+            id: unset
+            pages:
+              unset:
+                frontend:
+                  t: {type: button, content: x, width: 40, height: 20, offset: {x: 100, y: 60}, actions: 'tell: hi'}
+            """);
         var pages = Layouts.load(layouts);
-        check(pages.get("esc").closeWithEscape() && !pages.get("plain").closeWithEscape(),
+        check(pages.get("esc").closeWithEscape(false) && !pages.get("plain").closeWithEscape(true),
             "close-with-escape is read per page with the file default; display-width and scale-text-with-canvas are accepted");
+        check(pages.get("unset").closeWithEscape(true) && !pages.get("unset").closeWithEscape(false),
+            "a page and file without close-with-escape follow the server setting");
+        check(LumaMenuPlugin.readSettings(new org.bukkit.configuration.file.YamlConfiguration()).closeWithEscape(),
+            "the server setting close-with-escape defaults to true");
         rejects(() -> parse("id: test\nclose-with-escape: yes please\nfrontend: {}"), "close-with-escape needs true/false");
         Client client = new Client();
         Owner owner = new Owner();
@@ -1978,9 +2076,12 @@ public final class MenuChecks {
         check(!handle.active() && host.closedEvents.getLast().equals("esc:CLOSED"),
             "turning after the grace means Esc closed the Dialog: the menu closes too");
         var plain = engine.open(owner.plugin, client.player, "plain", Map.of(), a -> {}, c -> {});
-        check(!host.escapes.getLast(), "pages without close-with-escape keep Esc off");
+        check(!host.escapes.getLast(), "pages with close-with-escape: false keep Esc off");
         for (int i = 0; i < 10; i++) { client.eye.setYaw(client.eye.getYaw() + 20); engine.tick(); }
         check(plain.active(), "without close-with-escape turning never closes the menu");
+        engine.close(client.player);
+        engine.open(owner.plugin, client.player, "unset", Map.of(), x -> {}, c -> {});
+        check(host.escapes.getLast(), "by default (server setting true) an unset page allows Esc");
         engine.close(client.player);
         host.corner = true;
         var nativePage = engine.open(owner.plugin, client.player, "native", Map.of(), a -> {}, c -> {});

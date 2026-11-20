@@ -20,11 +20,14 @@ import java.util.regex.Pattern;
  * header line's centre) and {@code card-stripe} (2-unit left edge on cards) add decorations only themes that set them.
  */
 final class Themes {
-    record Theme(String name, String label, Map<String, Integer> colors, String corner, double cornerSize) {
+    /** {@code clickSound}: played when a menu control in this theme is clicked, in the {@code sound:} action format; empty for none. */
+    record Theme(String name, String label, Map<String, Integer> colors, String corner, double cornerSize,
+                 String clickSound) {
         Theme {
             colors = Map.copyOf(colors);
             Objects.requireNonNull(label);
             Objects.requireNonNull(corner);
+            Objects.requireNonNull(clickSound);
         }
         /** Optional decorations ({@code panel-inset}, {@code header-gem}, {@code card-stripe}) draw only when set. */
         boolean has(String token) { return colors.containsKey(token); }
@@ -40,7 +43,12 @@ final class Themes {
     static final Map<String, String> RIFT = rift();
     private static final Pattern NAME = Pattern.compile("[a-z0-9_-]+");
     private static final Pattern HEX = Pattern.compile("#[0-9A-Fa-f]{6}");
-    static final Themes BUILT_IN = new Themes(DEFAULT, Map.of(DEFAULT, theme(DEFAULT, "界隙", Map.of(), "", 7)));
+    /** Sound key, then optional {@code -volume} and {@code -pitch} (the {@code sound:} action format). */
+    private static final Pattern SOUND = Pattern.compile("[a-z0-9_.:/]+(-[0-9]*\\.?[0-9]+){0,2}");
+    /** Rift clicks sound like stepping on amethyst (user choice 2026-11-20). */
+    static final String RIFT_CLICK = "block.amethyst_block.step-0.8-1.2";
+    static final Themes BUILT_IN = new Themes(DEFAULT,
+        Map.of(DEFAULT, theme(DEFAULT, "界隙", Map.of(), "", 7, RIFT_CLICK)));
 
     private final String fallback;
     private final Map<String, Theme> themes;
@@ -85,7 +93,10 @@ final class Themes {
         return Collections.unmodifiableMap(c);
     }
 
-    private static Theme theme(String name, String label, Map<String, String> overrides, String corner, double cornerSize) {
+    private static Theme theme(String name, String label, Map<String, String> overrides, String corner, double cornerSize,
+                               String clickSound) {
+        if (!clickSound.isEmpty() && !SOUND.matcher(clickSound).matches())
+            throw new IllegalArgumentException("主题" + name + "的click-sound须为 声音ID[-音量[-音调]]：" + clickSound);
         Map<String, Integer> colors = new LinkedHashMap<>();
         Map<String, String> merged = new LinkedHashMap<>(RIFT);
         merged.putAll(overrides);
@@ -95,7 +106,7 @@ final class Themes {
                 throw new IllegalArgumentException("主题" + name + "颜色" + key + "须为'#RRGGBB'");
             colors.put(key, Integer.parseInt(value.substring(1), 16));
         });
-        return new Theme(name, label, colors, corner, cornerSize);
+        return new Theme(name, label, colors, corner, cornerSize, clickSound);
     }
 
     /** {@code themes.yml} beside {@code layouts/}; without it only the built-in theme exists. */
@@ -120,7 +131,7 @@ final class Themes {
             ConfigurationSection spec = section.getConfigurationSection(name);
             if (spec == null) throw new IllegalArgumentException(name + "须为对象");
             for (String key : spec.getKeys(false))
-                if (!Set.of("label", "colors", "corner", "corner-size").contains(key))
+                if (!Set.of("label", "colors", "corner", "corner-size", "click-sound").contains(key))
                     throw new IllegalArgumentException(name + "：未知字段 " + key);
             Map<String, String> colors = new LinkedHashMap<>();
             ConfigurationSection colorSpec = spec.getConfigurationSection("colors");
@@ -128,7 +139,9 @@ final class Themes {
             double size = spec.getDouble("corner-size", 7);
             if (!(size >= 1 && size <= 64)) throw new IllegalArgumentException(name + "：corner-size须为1..64");
             String label = spec.getString("label", result.containsKey(name) ? result.get(name).label() : name);
-            result.put(name, theme(name, label, colors, spec.getString("corner", ""), size));
+            // Unset keeps a built-in theme's sound (rift: amethyst); other themes are silent unless they name one.
+            String click = spec.getString("click-sound", result.containsKey(name) ? result.get(name).clickSound() : "");
+            result.put(name, theme(name, label, colors, spec.getString("corner", ""), size, click));
         }
         String fallback = root.getString("default", DEFAULT);
         if (!result.containsKey(fallback)) throw new IllegalArgumentException("default主题不存在：" + fallback);

@@ -19,6 +19,8 @@ final class MenuEngine implements LumaMenuApi {
         void requireMain();
         void checkClient(Player player);
         default boolean cornerClose() { return true; }
+        /** Default {@code close-with-escape} for pages that do not set it. */
+        default boolean closeWithEscape() { return true; }
         default void begin(Player player) {}
         default void end(Player player) {}
         /** Applies the requested client pitch and returns whether the client now looks straight down. */
@@ -101,7 +103,13 @@ final class MenuEngine implements LumaMenuApi {
         this.cache = cache;
         this.compiled = compiled;
         this.preferences = preferences;
+        this.profiles = new PlayerProfiles(compiled.pages(), compiled.rotationHitStep(), PROFILE_PAUSE_MILLIS,
+            message -> plugin.getLogger().warning(message));
     }
+    /** Pause between pages while building a player's profile in the background, so it never competes for CPU. */
+    static final long PROFILE_PAUSE_MILLIS = 1;
+    /** Online players' displays and hit outlines; memory only, see {@link PlayerProfiles}. */
+    private final PlayerProfiles profiles;
 
     private volatile Themes themes = Themes.BUILT_IN;
     private ThemeChoices themeChoices = memoryChoices();
@@ -136,6 +144,19 @@ final class MenuEngine implements LumaMenuApi {
         Session session = sessions.get(player.getUniqueId());
         return session == null || session.page == null ? "" : shown(session);
     }
+    /**
+     * The click sound of the theme the shown page was drawn in (its themed copy, else the player's theme), unless the
+     * control plays its own {@code sound:} action.
+     */
+    private void clickSound(Session session, Layouts.Control control) {
+        for (String action : control.actions()) if (action.trim().startsWith("sound:")) return;
+        for (String action : control.doubleActions()) if (action.trim().startsWith("sound:")) return;
+        String shown = shown(session);
+        int at = shown.indexOf(Themes.VARIANT);
+        String theme = at >= 0 ? shown.substring(at + 1) : themes.effective(themeChoices.get(session.player.getUniqueId()));
+        String sound = themes.get(theme).clickSound();
+        if (!sound.isEmpty()) host.sound(session.player, sound);
+    }
     /** The compiled page drawn for this session: its page in the player's theme when the layout follows players. */
     private String shown(Session session) {
         String theme = themes.effective(themeChoices.get(session.player.getUniqueId()));
@@ -157,8 +178,7 @@ final class MenuEngine implements LumaMenuApi {
             var mapping = mapping(player.getUniqueId());
             String shown = shown(session);
             boolean down = compiled.pages().get(shown).lookDown() && mode == RenderMode.COMPATIBLE;
-            compiled.prepared(mapping, shown, mode, down);
-            compiled.hit(mapping, shown, mode, down);
+            profiles.get(player.getUniqueId(), mapping, compiled.pages().get(shown), mode, down);
         }
         preferences.save(player.getUniqueId(), mode);
         if (session == null || session.attempt != null || session.mode == mode) return;
@@ -231,22 +251,26 @@ final class MenuEngine implements LumaMenuApi {
             else present(session, false);
         } catch (RuntimeException error) { close(player, Reason.ERROR, true); throw error; }
     }
-    void forget(UUID player) { debug.remove(player); }
-    int profileCount() { host.requireMain(); return compiled.profiles().size(); }
+    /** The player left: drop their hit-debug flag and their in-memory profile. */
+    void forget(UUID player) { debug.remove(player); profiles.forget(player); }
+    /** Players whose profile is currently held in memory. */
+    int profileCount() { host.requireMain(); return profiles.count(); }
+    /** Builds a calibrated player's profile in the background (join, reload, new calibration). */
+    void warm(Player player) {
+        host.requireMain();
+        Calibration.Mapping mapping = calibration.get(player.getUniqueId());
+        if (mapping != null) profiles.warm(player.getUniqueId(), mapping);
+    }
+    boolean warmed(UUID player) { return profiles.warmed(player); }
+    /** Plugin disable: stop the builder and release every profile. */
+    void shutdown() { profiles.close(); }
     int rotationHitStep() { host.requireMain(); return compiled.rotationHitStep(); }
     Stamp stamp(UUID player) { return stamps.get(player); }
-    /**
-     * The player's mapping, with its compiled profile: a mapping another server saved into the shared calibration
-     * file is compiled here the first time it is needed (the same work as finishing a calibration).
-     */
-    private Calibration.Mapping mapping(UUID player) {
-        Calibration.Mapping mapping = calibration.get(player);
-        if (mapping != null && !compiled.profiles().containsKey(mapping.key())) {
-            compiled = MenuCache.withMapping(compiled, mapping);
-            try { cache.save(compiled); }
-            catch (IOException error) { plugin.getLogger().warning("LumaMenu缓存保存失败，内存中已编译: " + error.getMessage()); }
-        }
-        return mapping;
+    /** The player's current mapping (another server sharing the calibration file may have changed it). */
+    private Calibration.Mapping mapping(UUID player) { return calibration.get(player); }
+    private PlayerProfiles.Entry entry(Player player, Calibration.Mapping mapping, Layouts.Page page, RenderMode mode,
+                                       boolean down) {
+        return profiles.get(player.getUniqueId(), mapping, page, mode, down);
     }
     /** A menu or calibration is open for the player. */
     boolean busy(UUID player) { host.requireMain(); return sessions.containsKey(player); }
@@ -260,7 +284,7 @@ final class MenuEngine implements LumaMenuApi {
         Layouts.Page target = page(player, layoutPage(page));
         Calibration.Mapping mapping = mapping(player.getUniqueId());
         if (mapping == null) throw new IllegalStateException("请先 /lumamenu calibrate 完成两点定位");
-        compiled.prepared(mapping, target.id(), mode(player));
+        entry(player, mapping, target, mode(player), false);
         Map<String, String> checked = checkedValues(values);
         replace(player);
         Session session = new Session(owner, player, callback, closed);
@@ -333,11 +357,12 @@ final class MenuEngine implements LumaMenuApi {
     void reload(Path layouts, int step) throws Exception {
         host.requireMain();
         Themes nextThemes = Themes.load(Themes.file(layouts));
-        MenuCache.State next = MenuCache.compile(Layouts.load(layouts), calibration.all(), step);
+        MenuCache.State next = MenuCache.compile(Layouts.load(layouts), List.of(), step);
         cache.save(next);
         themes = nextThemes;
         closeAll(Reason.RELOAD);
         compiled = next;
+        profiles.pages(next.pages(), next.rotationHitStep());
         hiddenHits.clear();
         placements.clear();
     }
@@ -351,11 +376,12 @@ final class MenuEngine implements LumaMenuApi {
         if (fresh.isEmpty() && compiled.pages().values().stream().noneMatch(p -> file.equals(p.file())))
             throw new IllegalArgumentException("找不到布局文件：" + file + ".yml");
         var pages = Layouts.replaceFile(compiled.pages(), file, fresh);
-        MenuCache.State next = MenuCache.compile(pages, calibration.all(), compiled.rotationHitStep());
+        MenuCache.State next = MenuCache.compile(pages, List.of(), compiled.rotationHitStep());
         cache.save(next);
         themes = nextThemes;
         closeAll(Reason.RELOAD);
         compiled = next;
+        profiles.pages(next.pages(), next.rotationHitStep());
         hiddenHits.clear();
         placements.clear();
     }
@@ -421,12 +447,14 @@ final class MenuEngine implements LumaMenuApi {
                 // Collections are loading or saving: ignore the click but hand out fresh tokens.
                 if (session.busy) { present(session, false); return; }
                 if (!permitted(session.player, control.permission())) throw new IllegalStateException("没有操作权限");
+                clickSound(session, control);
                 if (control.gesture()) gesture(session, control);
                 else execute(session, control, control.actions(), values);
             }));
         }
         ClickEvent exit = actions.bind(session::close);
-        var prepared = placed == null ? compiled.prepared(mapping, page.id(), session.mode, session.down) : placed.prepared();
+        var cached = placed == null ? entry(session.player, mapping, page, session.mode, session.down) : null;
+        var prepared = placed == null ? cached.prepared() : placed.prepared();
         if (entities) displays.show(session.player, prepared, values, session.mode, session.down, hiddenVisuals);
         else displays.move(session.player, prepared, values, hiddenVisuals);
         tokens.publish(session.player.getUniqueId(), actions);
@@ -436,11 +464,10 @@ final class MenuEngine implements LumaMenuApi {
         boolean chrome = corner && !ownClose(page, allowed);
         var hit = placed != null ? placed.hits().computeIfAbsent(Set.copyOf(hiddenControls), hidden ->
                 HitGeometry.compile(placed.page(), mapping, placed.prepared(), compiled.rotationHitStep(), session.mode, hidden))
-            : hiddenControls.isEmpty() ? compiled.hit(mapping, page.id(), session.mode, session.down)
+            : hiddenControls.isEmpty() ? cached.hit()
             : hiddenHits.computeIfAbsent(new HiddenHit(page.id(), mapping.key(), session.mode, session.down,
                 Set.copyOf(hiddenControls)), key -> HitGeometry.compile(page, mapping,
-                compiled.prepared(mapping, page.id(), session.mode, session.down), compiled.rotationHitStep(),
-                session.mode, key.hidden()));
+                cached.prepared(), compiled.rotationHitStep(), session.mode, key.hidden()));
         int rows = HitSurface.usableRows(page.surfaceRows(), page.surfaceOriginY(), !corner);
         if (allowed.stream().anyMatch(index -> (chrome ? hit.chrome().surface() : hit.surface()).stream()
                 .anyMatch(patch -> patch.control() == index && patch.row() >= rows)))
@@ -457,8 +484,8 @@ final class MenuEngine implements LumaMenuApi {
             lifts, clicks, tips, allowed, from, rows, page.surfaceOriginX(), page.surfaceAdvance(), HitSurface.ADVANCE,
             chrome ? hit.chrome() : null, exit, debug.contains(session.player.getUniqueId())),
             page.surfaceOriginY(), from, rows, HitSurface.ADVANCE, !corner, frame),
-            exit, HitSurface.BODY_WIDTH, corner, page.closeWithEscape());
-        session.escape = corner && page.closeWithEscape();
+            exit, HitSurface.BODY_WIDTH, corner, page.closeWithEscape(host.closeWithEscape()));
+        session.escape = corner && page.closeWithEscape(host.closeWithEscape());
         session.grace = ESCAPE_GRACE_TICKS;
         session.facing = Facing.of(session.player);
     }
@@ -812,10 +839,10 @@ final class MenuEngine implements LumaMenuApi {
                     try {
                         var settled = session.attempt.settled();
                         Calibration.Mapping mapping = settled.mapping();
-                        MenuCache.State next = MenuCache.withMapping(compiled, mapping);
-                        cache.save(next);
                         calibration.save(session.player.getUniqueId(), mapping, settled.frame());
-                        compiled = next;
+                        // Nothing is compiled here: the profile is built in the background, and a page opened
+                        // before that is built on the spot.
+                        profiles.warm(session.player.getUniqueId(), mapping);
                     } catch (IOException error) { throw new IllegalStateException("校准保存失败，旧值保留", error); }
                     String after = session.afterCalibration;
                     session.close();
