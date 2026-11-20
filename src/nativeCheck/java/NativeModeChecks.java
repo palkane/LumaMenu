@@ -35,6 +35,8 @@ final class NativeModeChecks {
                 var view = new Quaternionf(billboard).conjugate();
                 for (var entry : fixtures) {
                     var p = entry.getAsJsonObject();
+                    // A bar fill is scaled to its live variable share, not to the authored size.
+                    if (!p.getAsJsonObject("visual").get("fillSource").getAsString().isEmpty()) continue;
                     double d = n(p, "depth"), up = n(p, "up"), side = n(p, "side");
                     var left = new Quaternionf(f(p, "qx"), f(p, "qy"), f(p, "qz"), f(p, "qw"));
                     var right = new Quaternionf(f(p, "rqx"), f(p, "rqy"), f(p, "rqz"), f(p, "rqw"));

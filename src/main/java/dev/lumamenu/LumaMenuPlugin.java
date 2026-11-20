@@ -70,14 +70,9 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             settings = readSettings(getConfig());
             layouts = data.resolve("layouts");
             Files.createDirectories(layouts);
-            for (String name : List.of("demo.yml", "coordinates.yml", "transforms.yml", "features.yml"))
+            for (String name : List.of("showcase.yml", "demo.yml", "coordinates.yml", "transforms.yml", "features.yml"))
                 if (!Files.exists(layouts.resolve(name))) saveResource("layouts/" + name, false);
             if (!Files.exists(data.resolve("themes.yml"))) saveResource("themes.yml", false);
-            for (String theme : List.of("rift", "parchment"))
-                for (String corner : List.of("tl", "tr", "bl", "br")) {
-                    String name = "images/theme/" + theme + "/corner-" + corner + ".png";
-                    if (!Files.exists(data.resolve(name))) saveResource(name, false);
-                }
             Calibration.Store calibration = new Calibration.Store(data.resolve("calibration.properties"));
             cache = new MenuCache(data.resolve("cache/compiled.json.gz"));
             MenuCache.State state;
@@ -191,7 +186,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             }
             if (!(sender instanceof Player player)) throw new IllegalStateException("此操作仅供玩家使用");
             switch (sub) {
-                case "open" -> engine.demo(player, args.length > 1 ? args[1] : "demo");
+                case "open" -> engine.demo(player, args.length > 1 ? args[1] : "showcase");
                 case "calibrate", "align" -> engine.calibrate(player);
                 case "close" -> engine.close(player);
                 case "debug" -> {

@@ -104,7 +104,7 @@ final class LookDownChecks {
         pages.putAll(Layouts.load(Path.of("src/main/resources/layouts")));
         var state = MenuCache.compile(pages, List.of(mapping), 2);
         check(state.lookDownProfiles().keySet().equals(Set.of(mapping.key()))
-            && state.lookDownProfiles().get(mapping.key()).prepared().keySet().equals(Set.of("steer", "demo", "transforms")),
+            && state.lookDownProfiles().get(mapping.key()).prepared().keySet().equals(Set.of("steer", "demo", "transforms", "showcase", "showcase" + Themes.VARIANT + "end")),
             "flattened profiles exist only for look-down pages");
         check(state.prepared(mapping, "coordinates", RenderMode.COMPATIBLE, true)
                 .equals(state.prepared(mapping, "coordinates", RenderMode.COMPATIBLE, false))

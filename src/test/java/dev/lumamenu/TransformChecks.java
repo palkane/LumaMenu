@@ -194,6 +194,7 @@ final class TransformChecks {
         // Old format-2 caches lack all additive fields, but must retain old geometry exactly.
         var oldPages = new LinkedHashMap<>(Layouts.load(Path.of("src/main/resources/layouts")));
         oldPages.remove("transforms");
+        oldPages.keySet().removeIf(id -> id.startsWith("showcase"));
         var ordinary = MenuCache.compile(oldPages, List.of(mapping));
         var json = new Gson().toJsonTree(ordinary).getAsJsonObject();
         json.remove("lookDownProfiles");

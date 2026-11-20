@@ -997,8 +997,8 @@ final class Layouts {
             boolean selected = bool(node, "selected", false);
             String defaultColor = switch (type) {
                 case "button" -> !themedButton ? style.equals("vanilla") ? "#6F6F6F" : "#FFFFFF"
-                    : variant.equals("primary") ? "@on-accent" : variant.equals("disabled") ? "@muted" : "@text";
-                case "tab" -> selected ? "@on-accent" : "@text";
+                    : variant.equals("primary") ? "@on-accent" : variant.equals("disabled") ? "@muted" : "@button-text";
+                case "tab" -> selected ? "@on-accent" : "@button-text";
                 case "panel" -> "@panel";
                 case "card" -> "@card";
                 case "bar", "badge" -> "@accent";
@@ -1078,6 +1078,10 @@ final class Layouts {
                             default -> {
                                 t.plane("/fill", 0, 0, width, height, "button");
                                 t.plane("/shade", 0, height / 2 - 1, width, 2, "button-shade");
+                                if (theme.has("button-light")) {
+                                    t.plane("/light-top", 0, -height / 2 + 1.5, width - 2, 1, "button-light");
+                                    t.plane("/light-left", -width / 2 + 1.5, -.5, 1, height - 3, "button-light");
+                                }
                                 t.border("/edge", width, height, "button-border");
                             }
                         }
@@ -1110,12 +1114,20 @@ final class Layouts {
                     visuals.add(tinted.apply(visual(id + "/fill", "plane", x, y, z + .0001, width, height, size,
                         color, "", "", "", 0, 0, 0, 1, 1, 1)));
                     t.border("/edge", width, height, "panel-border");
-                    t.plane("/light", 0, -height / 2 + 1.5, width - 2, 1, "panel-highlight");
+                    boolean bevel = theme.has("panel-shade");
+                    if (!bevel) t.plane("/light", 0, -height / 2 + 1.5, width - 2, 1, "panel-highlight");
                     if (theme.has("panel-inset")) t.border("/inset", width - 6, height - 6, "panel-inset");
                     if (header >= 2) {
                         t.plane("/header", 0, -height / 2 + header / 2, width - 2, header - 2, "header");
                         t.plane("/header-line", 0, -height / 2 + header - 1.5, width - 2, 1, "header-line");
                         if (theme.has("header-gem")) t.plane("/header-gem", 0, -height / 2 + header - 1.5, 4, 3, "header-gem");
+                    }
+                    // Vanilla container bevel, over the edge and header: light top/left, shade bottom/right.
+                    if (bevel) {
+                        t.plane("/light-top", -.5, -height / 2 + 1, width - 1, 2, "panel-highlight");
+                        t.plane("/light-left", -width / 2 + 1, -.5, 2, height - 1, "panel-highlight");
+                        t.plane("/shade-bottom", .5, height / 2 - 1, width - 1, 2, "panel-shade");
+                        t.plane("/shade-right", width / 2 - 1, .5, 2, height - 1, "panel-shade");
                     }
                     if (!theme.corner().isEmpty()) {
                         double c = theme.cornerSize();
@@ -1137,6 +1149,10 @@ final class Layouts {
                     visuals.add(tinted.apply(visual(id + "/fill", "plane", x, y, z, width, height, size,
                         color, "", "", "", 0, 0, 0, 1, 1, 1)));
                     t.border("/edge", width, height, "card-border");
+                    if (theme.has("card-light")) {
+                        t.plane("/light-bottom", .5, height / 2 - .5, width - 1, 1, "card-light");
+                        t.plane("/light-right", width / 2 - .5, .5, 1, height - 1, "card-light");
+                    }
                     if (theme.has("card-stripe")) t.plane("/stripe", -width / 2 + 1, 0, 2, height, "card-stripe");
                 }
                 case "tab" -> {

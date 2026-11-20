@@ -153,7 +153,8 @@ public final class MenuChecks {
     }
     private static void compiler() throws Exception {
         Map<String, Layouts.Page> pages = demo();
-        check(pages.keySet().equals(Set.of("demo", "detail", "coordinates", "transforms", "features", "features-native")),
+        check(pages.keySet().stream().filter(id -> !id.contains(Themes.VARIANT)).collect(java.util.stream.Collectors.toSet())
+                .equals(Set.of("showcase", "demo", "detail", "coordinates", "transforms", "features", "features-native")),
             "bundled YAML retains normal pages only");
         check(pages.get("demo").lookDown() && pages.get("transforms").lookDown()
             && !pages.get("detail").lookDown() && !pages.get("coordinates").lookDown(),
@@ -824,7 +825,9 @@ public final class MenuChecks {
         Path layouts = dir.resolve("layouts");
         Files.createDirectories(layouts);
         try (var files = Files.list(Path.of("src/main/resources/layouts"))) {
-            for (Path file : files.toList()) Files.copy(file, layouts.resolve(file.getFileName()));
+            // Old cache formats predate templates and forms, so the showcase page cannot appear in them.
+            for (Path file : files.toList())
+                if (!file.getFileName().toString().equals("showcase.yml")) Files.copy(file, layouts.resolve(file.getFileName()));
         }
         Client client = new Client();
         Client second = new Client();
@@ -919,7 +922,7 @@ public final class MenuChecks {
         Files.copy(Path.of("src/main/resources/layouts/demo.yml"), layouts.resolve("demo.yml"), StandardCopyOption.REPLACE_EXISTING);
         var next = engine.open(owner.plugin, client.player, "demo", Map.of(), callbacks::add, closed::add);
         engine.reload(layouts);
-        check(!next.active() && engine.activeCount() == 0 && cache.read().pages().keySet().equals(demo().keySet()),
+        check(!next.active() && engine.activeCount() == 0 && cache.read().pages().keySet().equals(Layouts.load(layouts).keySet()),
             "successful reload persists new cache before invalidating old sessions");
 
         var damaged = engine.open(owner.plugin, client.player, "demo", Map.of(), callbacks::add, closed::add);
@@ -1387,17 +1390,32 @@ public final class MenuChecks {
         for (String theme : List.of("rift", "parchment")) {
             Files.createDirectories(images.resolveSibling(theme));
             for (String corner : List.of("tl", "tr", "bl", "br"))
-                Files.copy(Path.of("src/main/resources/images/theme/" + theme + "/corner-" + corner + ".png"),
+                Files.copy(Path.of("src/test/fixtures/images/theme/" + theme + "/corner-" + corner + ".png"),
                     images.resolveSibling(theme).resolve("corner-" + corner + ".png"), StandardCopyOption.REPLACE_EXISTING);
         }
-        Files.copy(Path.of("src/main/resources/themes.yml"), dir.resolve("themes.yml"), StandardCopyOption.REPLACE_EXISTING);
+        Files.copy(Path.of("src/test/fixtures/themes.yml"), dir.resolve("themes.yml"), StandardCopyOption.REPLACE_EXISTING);
         Files.writeString(dir.resolve("themes.yml"), Files.readString(dir.resolve("themes.yml"))
             + "  dusk:\n    colors: {accent: '#112233'}\n");
         check(Themes.load(dir.resolve("themes.yml")).get(null).color("panel") == 0xF8F6FD
             && Themes.load(dir.resolve("themes.yml")).get("dusk").color("accent") == 0x112233
-            && Themes.load(dir.resolve("themes.yml")).get("dusk").color("text") == 0x33304A
-            && Themes.load(dir.resolve("missing.yml")).get(null).color("accent") == 0x8C6CF0,
-            "themes start from the built-in rift colors and override only what they name");
+            && Themes.load(dir.resolve("themes.yml")).get("dusk").color("text") == 0x404040
+            && Themes.load(dir.resolve("missing.yml")).get(null).color("accent") == 0x4F8A2B,
+            "themes start from the built-in vanilla colors and override only what they name");
+        var listed = Themes.load(dir.resolve("themes.yml"));
+        check(listed.names().equals(List.of("rift", "parchment", "dusk")) && listed.fallback().equals("rift"),
+            "a themes.yml that lists themes offers only those, so the built-in vanilla is not added");
+        var bundled = Themes.load(Path.of("src/main/resources/themes.yml"));
+        check(bundled.names().equals(List.of("vanilla", "end")) && bundled.fallback().equals("vanilla")
+            && bundled.get(null).equals(Themes.BUILT_IN.get(null))
+            && Themes.load(dir.resolve("missing.yml")).names().equals(List.of("vanilla")),
+            "the bundled themes.yml spells out the built-in vanilla theme as default, plus the end theme");
+        var end = bundled.get("end");
+        check(end.label().equals("末地") && end.clickSound().equals("item.chorus_fruit.teleport-0.25-1.6")
+            && end.color("panel") == 0x1B1526 && end.color("header-gem") == 0x3FBFA0 && end.has("panel-inset")
+            && !end.has("panel-shade") && end.corner().isEmpty(), "the bundled end theme: void panel, ender-eye gem, chorus click");
+        check(listed.get("rift").color("button-text") == listed.get("rift").color("text")
+            && Themes.BUILT_IN.get(null).color("button-text") == 0xFFFFFF,
+            "button-text defaults to the theme's text color");
         Files.writeString(layouts.resolve("skin.yml"), """
             id: skin
             frontend:
@@ -1468,6 +1486,39 @@ public final class MenuChecks {
             "parchment draws its inset frame, header gem, card stripe and brass corners");
         check(skin.visuals().stream().noneMatch(x -> x.id().endsWith("/inset-top") || x.id().endsWith("/header-gem")
             || x.id().endsWith("/stripe")), "optional decorations stay off in themes that do not set them");
+        check(skin.visuals().stream().noneMatch(x -> x.id().contains("/light-") || x.id().contains("/shade-"))
+            && v.apply("panel/light").color() == 0xFFFFFF, "themes without bevel colors keep the single highlight line");
+        Path plainDir = root.resolve("vanilla-theme"), plainLayouts = plainDir.resolve("layouts");
+        Files.createDirectories(plainLayouts);
+        Files.createDirectories(plainDir.resolve("images"));
+        Files.writeString(plainLayouts.resolve("plain.yml"), """
+            id: plain
+            frontend:
+              panel: {type: panel, width: 300, height: 160, header: 24, offset: {x: 226, y: 90}}
+              card: {type: card, width: 100, height: 30, offset: {x: 150, y: 60}}
+              home: {type: tab, content: 主页, selected: true, offset: {x: 100, y: 80}, actions: 'callback: home'}
+              prefs: {type: tab, content: 设置, offset: {x: 180, y: 80}, actions: 'callback: prefs'}
+              shop: {type: button, style: theme, content: 商店, width: 74, height: 20, offset: {x: 100, y: 110}, actions: 'callback: shop'}
+              ok: {type: button, style: theme, variant: primary, content: 好, width: 60, height: 20, offset: {x: 200, y: 110}, actions: close}
+            """);
+        var plain = Layouts.load(plainLayouts).get("plain");
+        java.util.function.Function<String, Layouts.Visual> nv = id -> plain.visuals().stream()
+            .filter(x -> x.id().equals(id)).findFirst().orElseThrow();
+        check(nv.apply("panel/glow").color() == 0x000000 && nv.apply("panel/fill").color() == 0xC6C6C6
+            && nv.apply("panel/light-top").color() == 0xFFFFFF && nv.apply("panel/light-left").color() == 0xFFFFFF
+            && nv.apply("panel/shade-bottom").color() == 0x555555 && nv.apply("panel/shade-right").color() == 0x555555
+            && Math.abs(nv.apply("panel/light-left").width() - 2) < 1e-9
+            && plain.visuals().stream().noneMatch(x -> x.id().equals("panel/light") || x.id().startsWith("panel/corner-")),
+            "the built-in vanilla panel has a black outline, 2-unit light/shade bevel and no corners");
+        check(plain.visuals().indexOf(nv.apply("panel/light-top")) > plain.visuals().indexOf(nv.apply("panel/header")),
+            "the bevel sits over the header");
+        check(nv.apply("shop/fill").color() == 0x6F6F6F && nv.apply("shop/edge-top").color() == 0x000000
+            && nv.apply("shop/light-top").color() == 0xAAAAAA && nv.apply("shop/label").color() == 0xFFFFFF
+            && nv.apply("prefs/label").color() == 0xFFFFFF && nv.apply("ok/label").color() == 0xFFFFFF,
+            "vanilla buttons are gray with a light edge and white labels");
+        check(nv.apply("card/fill").color() == 0xBDBDBD && nv.apply("card/edge-top").color() == 0x8B8B8B
+            && nv.apply("card/light-bottom").color() == 0xFFFFFF && nv.apply("card/light-right").color() == 0xFFFFFF,
+            "vanilla cards look sunken: dark top/left, white bottom/right");
         check(pages.get("dusk").visuals().stream().anyMatch(x -> x.id().equals("ok/fill") && x.color() == 0x112233),
             "a layout's theme: picks another theme");
         var dynamic = Layouts.parse("dyn", yamlOf("id: dyn\nvariables: {m: {type: literal, source: 'minecraft:stone'}}\n"
@@ -1538,10 +1589,10 @@ public final class MenuChecks {
         for (String theme : List.of("rift", "parchment")) {
             Path folder = Files.createDirectories(dir.resolve("images/theme/" + theme));
             for (String corner : List.of("tl", "tr", "bl", "br"))
-                Files.copy(Path.of("src/main/resources/images/theme/" + theme + "/corner-" + corner + ".png"),
+                Files.copy(Path.of("src/test/fixtures/images/theme/" + theme + "/corner-" + corner + ".png"),
                     folder.resolve("corner-" + corner + ".png"));
         }
-        Files.copy(Path.of("src/main/resources/themes.yml"), dir.resolve("themes.yml"));
+        Files.copy(Path.of("src/test/fixtures/themes.yml"), dir.resolve("themes.yml"));
         Files.writeString(layouts.resolve("tm.yml"), """
             schema-version: 3
             id: tm
@@ -1607,10 +1658,12 @@ public final class MenuChecks {
         engine.click(client.player, clickAt(host.body(client.id), 226, 70));
         check(host.sounds.getLast().equals("item.book.page_turn-0.8-1"), "a parchment click sounds like turning a page");
         var custom = new org.bukkit.configuration.file.YamlConfiguration();
-        custom.loadFromString("themes:\n  quiet: {label: Q}\n  rift: {label: R2}\n");
+        custom.loadFromString("themes:\n  quiet: {label: Q}\n  vanilla: {label: V2}\n");
         var parsed = Themes.parse(custom);
-        check(parsed.get("quiet").clickSound().isEmpty() && parsed.get("rift").clickSound().equals(Themes.RIFT_CLICK),
-            "a new theme is silent unless it names a sound; rift keeps its amethyst step");
+        check(parsed.get("quiet").clickSound().isEmpty() && parsed.get("vanilla").clickSound().equals(Themes.VANILLA_CLICK)
+            && parsed.get("vanilla").label().equals("V2") && parsed.fallback().equals("quiet")
+            && parsed.get("vanilla").colors().equals(Themes.BUILT_IN.get(null).colors()),
+            "a new theme is silent unless it names a sound; vanilla keeps its button click; default is the first listed");
         custom.loadFromString("themes:\n  bad: {click-sound: 'Not A Sound'}\n");
         rejects(() -> Themes.parse(custom), "an invalid click-sound is rejected");
         sent.clear();
@@ -2669,7 +2722,7 @@ public final class MenuChecks {
         for (int i = 0; i < prepared.size(); i++) {
             var p = prepared.get(i);
             var v = p.visual();
-            if (!v.kind().equals("plane")) continue;
+            if (!v.kind().equals("plane") || !v.fillSource().isEmpty() || !v.colorSource().isEmpty()) continue;
             check(spawns.get(i).getEntityType() == EntityTypes.TEXT_DISPLAY,
                 "planes are TextDisplay backgrounds, unaffected by view direction");
             var data = metadata.get(i).getEntityMetadata();

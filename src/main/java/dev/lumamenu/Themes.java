@@ -15,9 +15,13 @@ import java.util.regex.Pattern;
  * {@code button} with {@code style: theme}, grids with {@code background: theme}). A theme is a set of named colors,
  * referenced anywhere a color is written as {@code '@name'} (Android-style resource reference; the curly-brace
  * alias of the Design Tokens format is already taken by layout variables), plus an optional corner image.
- * {@code themes.yml} sits next to {@code layouts/}; every theme starts from the built-in {@code rift} colors. The
- * optional colors {@code panel-inset} (frame line 3 units inside the panel), {@code header-gem} (small square on the
- * header line's centre) and {@code card-stripe} (2-unit left edge on cards) add decorations only themes that set them.
+ * {@code themes.yml} sits next to {@code layouts/}; every theme starts from the built-in {@code vanilla} colors. When
+ * the file lists themes, only those exist; without it only the built-in {@code vanilla} theme does. The optional
+ * colors {@code panel-inset} (frame line 3 units inside the panel), {@code header-gem} (small square on the header
+ * line's centre), {@code card-stripe} (2-unit left edge on cards), {@code panel-shade} (2-unit bevel: highlight on the
+ * top and left, this color on the bottom and right), {@code button-light} (1-unit top and left highlight on normal
+ * buttons) and {@code card-light} (bottom and right card edges, a sunken look) add decorations only themes that set
+ * them. {@code button-text} colors labels on normal buttons and unselected tabs; unset, it is {@code text}.
  */
 final class Themes {
     /** {@code clickSound}: played when a menu control in this theme is clicked, in the {@code sound:} action format; empty for none. */
@@ -29,7 +33,7 @@ final class Themes {
             Objects.requireNonNull(corner);
             Objects.requireNonNull(clickSound);
         }
-        /** Optional decorations ({@code panel-inset}, {@code header-gem}, {@code card-stripe}) draw only when set. */
+        /** Optional decorations (see the class comment) draw only when set. */
         boolean has(String token) { return colors.containsKey(token); }
         int color(String token) {
             Integer value = colors.get(token);
@@ -38,17 +42,20 @@ final class Themes {
         }
     }
 
-    static final String DEFAULT = "rift";
-    /** Light frost panel, rift-violet accent (user choice "A 晶白霜面", 2026-11-19). */
-    static final Map<String, String> RIFT = rift();
+    static final String DEFAULT = "vanilla";
+    /** Colors every theme starts from: the vanilla container look (#C6C6C6 panel, #404040 text, gray buttons). */
+    static final Map<String, String> BASE = base();
     private static final Pattern NAME = Pattern.compile("[a-z0-9_-]+");
     private static final Pattern HEX = Pattern.compile("#[0-9A-Fa-f]{6}");
     /** Sound key, then optional {@code -volume} and {@code -pitch} (the {@code sound:} action format). */
     private static final Pattern SOUND = Pattern.compile("[a-z0-9_.:/]+(-[0-9]*\\.?[0-9]+){0,2}");
-    /** Rift clicks sound like stepping on amethyst (user choice 2026-11-20). */
-    static final String RIFT_CLICK = "block.amethyst_block.step-0.8-1.2";
+    /** The vanilla button click. */
+    static final String VANILLA_CLICK = "ui.button.click-0.25-1";
+    /** Optional colors the built-in vanilla adds to {@link #BASE}; a themes.yml {@code vanilla} entry starts from them too. */
+    private static final Map<String, String> VANILLA_EXTRAS = Map.of("panel-shade", "#555555", "button-light", "#AAAAAA",
+        "button-text", "#FFFFFF", "card-light", "#FFFFFF");
     static final Themes BUILT_IN = new Themes(DEFAULT,
-        Map.of(DEFAULT, theme(DEFAULT, "界隙", Map.of(), "", 7, RIFT_CLICK)));
+        Map.of(DEFAULT, theme(DEFAULT, "原版", VANILLA_EXTRAS, "", 7, VANILLA_CLICK)));
 
     private final String fallback;
     private final Map<String, Theme> themes;
@@ -65,31 +72,31 @@ final class Themes {
     /** A player's choice when it still exists, else the default. */
     String effective(String choice) { return choice != null && themes.containsKey(choice) ? choice : fallback; }
 
-    private static Map<String, String> rift() {
+    private static Map<String, String> base() {
         Map<String, String> c = new LinkedHashMap<>();
-        c.put("panel", "#F8F6FD");
-        c.put("panel-border", "#8C6CF0");
-        c.put("panel-glow", "#CDBEFF");
+        c.put("panel", "#C6C6C6");
+        c.put("panel-border", "#C6C6C6");
+        c.put("panel-glow", "#000000");
         c.put("panel-highlight", "#FFFFFF");
-        c.put("header", "#EEE8FC");
-        c.put("header-line", "#C9B9F7");
-        c.put("title", "#3B2C78");
-        c.put("text", "#33304A");
-        c.put("muted", "#8A86A0");
-        c.put("accent", "#8C6CF0");
-        c.put("accent-dark", "#6E4BD8");
-        c.put("accent-light", "#B9A4FF");
-        c.put("accent-text", "#5B3FC4");
+        c.put("header", "#C6C6C6");
+        c.put("header-line", "#8B8B8B");
+        c.put("title", "#404040");
+        c.put("text", "#404040");
+        c.put("muted", "#6B6B6B");
+        c.put("accent", "#4F8A2B");
+        c.put("accent-dark", "#2E5A17");
+        c.put("accent-light", "#7DBE4E");
+        c.put("accent-text", "#2E6B12");
         c.put("on-accent", "#FFFFFF");
-        c.put("button", "#FFFFFF");
-        c.put("button-border", "#DCD3F5");
-        c.put("button-shade", "#D9CEF6");
-        c.put("disabled", "#EFEEF3");
-        c.put("disabled-border", "#E0DEE8");
-        c.put("card", "#F1ECFD");
-        c.put("card-border", "#DCD3F5");
-        c.put("track", "#E2DAF7");
-        c.put("slot-empty", "#C9B9F7");
+        c.put("button", "#6F6F6F");
+        c.put("button-border", "#000000");
+        c.put("button-shade", "#555555");
+        c.put("disabled", "#8B8B8B");
+        c.put("disabled-border", "#555555");
+        c.put("card", "#BDBDBD");
+        c.put("card-border", "#8B8B8B");
+        c.put("track", "#373737");
+        c.put("slot-empty", "#8B8B8B");
         return Collections.unmodifiableMap(c);
     }
 
@@ -98,8 +105,9 @@ final class Themes {
         if (!clickSound.isEmpty() && !SOUND.matcher(clickSound).matches())
             throw new IllegalArgumentException("主题" + name + "的click-sound须为 声音ID[-音量[-音调]]：" + clickSound);
         Map<String, Integer> colors = new LinkedHashMap<>();
-        Map<String, String> merged = new LinkedHashMap<>(RIFT);
+        Map<String, String> merged = new LinkedHashMap<>(BASE);
         merged.putAll(overrides);
+        merged.putIfAbsent("button-text", merged.get("text"));
         merged.forEach((key, value) -> {
             if (!NAME.matcher(key).matches()) throw new IllegalArgumentException("主题颜色名非法：" + key);
             if (!HEX.matcher(value).matches())
@@ -124,8 +132,9 @@ final class Themes {
     static Themes parse(ConfigurationSection root) {
         for (String key : root.getKeys(false))
             if (!Set.of("default", "themes").contains(key)) throw new IllegalArgumentException("未知字段 " + key);
-        Map<String, Theme> result = new LinkedHashMap<>(BUILT_IN.themes);
         ConfigurationSection section = root.getConfigurationSection("themes");
+        boolean listed = section != null && !section.getKeys(false).isEmpty();
+        Map<String, Theme> result = new LinkedHashMap<>();
         if (section != null) for (String name : section.getKeys(false)) {
             if (!NAME.matcher(name).matches()) throw new IllegalArgumentException("主题名非法：" + name);
             ConfigurationSection spec = section.getConfigurationSection(name);
@@ -133,22 +142,21 @@ final class Themes {
             for (String key : spec.getKeys(false))
                 if (!Set.of("label", "colors", "corner", "corner-size", "click-sound").contains(key))
                     throw new IllegalArgumentException(name + "：未知字段 " + key);
-            Map<String, String> colors = new LinkedHashMap<>();
+            Map<String, String> colors = new LinkedHashMap<>(name.equals(DEFAULT) ? VANILLA_EXTRAS : Map.of());
             ConfigurationSection colorSpec = spec.getConfigurationSection("colors");
             if (colorSpec != null) for (String key : colorSpec.getKeys(false)) colors.put(key, colorSpec.getString(key, ""));
             double size = spec.getDouble("corner-size", 7);
             if (!(size >= 1 && size <= 64)) throw new IllegalArgumentException(name + "：corner-size须为1..64");
-            String label = spec.getString("label", result.containsKey(name) ? result.get(name).label() : name);
-            // Unset keeps a built-in theme's sound (rift: amethyst); other themes are silent unless they name one.
-            String click = spec.getString("click-sound", result.containsKey(name) ? result.get(name).clickSound() : "");
+            Theme builtIn = BUILT_IN.themes.get(name);
+            String label = spec.getString("label", builtIn != null ? builtIn.label() : name);
+            // Unset keeps the built-in theme's sound (vanilla: button click); other themes are silent unless they name one.
+            String click = spec.getString("click-sound", builtIn != null ? builtIn.clickSound() : "");
             result.put(name, theme(name, label, colors, spec.getString("corner", ""), size, click));
         }
-        String fallback = root.getString("default", DEFAULT);
+        if (!listed) result.putAll(BUILT_IN.themes);
+        String fallback = root.getString("default", listed ? result.keySet().iterator().next() : DEFAULT);
         if (!result.containsKey(fallback)) throw new IllegalArgumentException("default主题不存在：" + fallback);
-        var ordered = new LinkedHashMap<String, Theme>();
-        if (section != null) for (String name : section.getKeys(false)) ordered.put(name, result.get(name));
-        result.forEach(ordered::putIfAbsent);
-        return new Themes(fallback, ordered);
+        return new Themes(fallback, result);
     }
 
     /** Separates a page's ID from the theme it was compiled for: {@code main-menu~parchment}. */
