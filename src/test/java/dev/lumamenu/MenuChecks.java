@@ -855,30 +855,64 @@ public final class MenuChecks {
         int bodyY = height > screen - 38 ? 33 : Math.min(63, screen - 5 - height);
         return new Calibration.Point(point.x(), Calibration.PROBE_TOP + point.y() - 10 - bodyY);
     }
+    /** Where a 452-wide body centred on a screen of this GUI height and scale shows the attempt's cross. */
+    private static Calibration.Point crossHit(Calibration.Attempt attempt, int screen, double scale, int shift) {
+        int rows = attempt.rows(), contentHeight = 9 * rows + 18;
+        int bodyY = Math.max(33, Math.min(63, screen - 5 - contentHeight)) + shift;
+        var target = attempt.target();
+        return new Calibration.Point(226.5 + target.x() * scale, screen / 2.0 + target.y() * scale - bodyY - 10);
+    }
+    private static Calibration.Box crossCell(Calibration.Attempt attempt, Calibration.Point hit) {
+        return attempt.cells().stream().filter(b -> b.contains((int) Math.floor(hit.x()), (int) Math.floor(hit.y())))
+            .findFirst().orElse(null);
+    }
+    /** All corners as the screen shows them; null when the cross is off the grid or the attempt rejects the clicks. */
+    private static Calibration.Result calibrateOn(int screen, double fov, int clicks, int range, int probeShift) {
+        double scale = (screen / 2.0) / Math.tan(Math.toRadians(fov / 2.0));
+        var attempt = new Calibration.Attempt(clicks);
+        for (int i = 0; i < range; i++) attempt.changeRange();
+        try {
+            for (int i = 0; i < 80 && !attempt.complete(); i++) {
+                var cell = crossCell(attempt, crossHit(attempt, screen, scale, attempt.targetIndex() < 2 ? probeShift : 0));
+                if (cell == null) return null;
+                attempt.choose(cell);
+            }
+        } catch (IllegalArgumentException rejected) { return null; }
+        return attempt.settled();
+    }
+    private static boolean fitsScreen(Calibration.Result settled, int screen, double fov, int clicks) {
+        double scale = (screen / 2.0) / Math.tan(Math.toRadians(fov / 2.0));
+        double top = screen - 193 - 9 * settled.frame().trail();
+        int tolerance = clicks == 2 ? 5 : 2;
+        return Math.abs(settled.frame().screen() - screen) <= tolerance
+            && Math.abs(settled.mapping().oy() - (screen / 2.0 - top)) <= tolerance
+            && Math.abs(settled.mapping().sx() / scale - 1) <= .004 + tolerance / scale
+            && 9 * settled.frame().rows() + 18 <= screen - 38;
+    }
     private static JsonArray largeProbes() {
         JsonArray fixtures = new JsonArray();
+        double oldScale = 360 / Math.tan(Math.toRadians(45));
+        check(crossCell(new Calibration.Attempt(3), crossHit(new Calibration.Attempt(3), 720, oldScale, 0)) == null,
+            "fault control: a 1440p framebuffer at GUI 2x puts the standard cross below the grid");
         for (int screen : new int[]{540, 720, 900, 1080})
             for (int fov : new int[]{60, 70, 90, 110})
                 for (int clicks : new int[]{2, 3, 4}) {
                     double scale = (screen / 2.0) / Math.tan(Math.toRadians(fov / 2.0));
                     var attempt = new Calibration.Attempt(clicks);
-                    if (screen == 720 && fov == 90 && clicks == 3) {
-                        var old = attempt.target();
-                        check(screen / 2.0 + old.y() * scale - Calibration.PROBE_TOP >= Calibration.PROBE_HEIGHT,
-                            "fault control: a 1440p framebuffer at GUI 2x puts the old cross below the grid");
+                    int presses = 0;
+                    // The Dialog widget clips the probe's last two units, so a cross there takes the next range too.
+                    while (crossCell(attempt, crossHit(attempt, screen, scale, 0)) == null
+                        || crossHit(attempt, screen, scale, 0).y() >= Calibration.PROBE_HEIGHT - 2) {
+                        check(++presses < Calibration.Attempt.RANGES.size(),
+                            "a range puts the cross on the probe at " + screen + "/" + fov);
+                        attempt.changeRange();
                     }
-                    attempt.changeRange();
-                    if (screen >= 900) attempt.changeRange();
-                    int probeRows = attempt.rows();
-                    check(screen >= 86 + 9 * probeRows, "the selected probe has its fixed Y without scrolling");
+                    check(attempt.rows() == Calibration.PROBE_ROWS, "every range keeps the 16-row probe and its fixed Y");
                     for (int i = 0; i < 60 && !attempt.complete(); i++) {
-                        int rows = attempt.rows(), contentHeight = 9 * rows + 18;
-                        int bodyY = Math.max(33, Math.min(63, screen - 5 - contentHeight));
-                        var target = attempt.target();
-                        var hit = new Calibration.Point(226.5 + target.x() * scale,
-                            screen / 2.0 + target.y() * scale - bodyY - 10);
-                        var cell = cellAt(attempt, hit);
+                        var hit = crossHit(attempt, screen, scale, 0);
+                        var cell = crossCell(attempt, hit);
                         if (i == 0 && fov == 90 && clicks == 3) {
+                            int rows = attempt.rows();
                             var event = ClickEvent.custom(Key.key("lumamenu:cell"), null);
                             var range = ClickEvent.custom(Key.key("lumamenu:range"), null);
                             var exit = ClickEvent.custom(Key.key("lumamenu:exit"), null);
@@ -893,15 +927,31 @@ public final class MenuChecks {
                         attempt.choose(cell);
                     }
                     var settled = attempt.settled();
-                    double top = screen - 193 - 9 * settled.frame().trail();
-                    int tolerance = clicks == 2 ? 5 : 2;
-                    check(Math.abs(settled.frame().screen() - screen) <= tolerance
-                        && Math.abs(settled.mapping().oy() - (screen / 2.0 - top)) <= tolerance
-                        && Math.abs(settled.mapping().sx() - scale) <= tolerance
-                        && 9 * settled.frame().rows() + 18 <= screen - 38,
+                    check(fitsScreen(settled, screen, fov, clicks),
                         "large GUI completes all four corners and fits the actual frame at " + screen + "/" + fov + "/" + clicks
-                            + ": expected " + scale + "/" + (screen / 2.0 - top) + ", got " + settled);
+                            + ": got " + settled);
                 }
+        // Any range on any screen: the cross is off the grid, the clicks are rejected, or the result is right. A range
+        // never skews the height silently (0.3.13's taller probes did on screens too low for them).
+        int completed = 0;
+        for (int screen = 236; screen <= 1080; screen += 3)
+            for (double fov : new double[]{50, 60, 70, 90, 110, 126.5})
+                for (int range = 0; range < Calibration.Attempt.RANGES.size(); range++) {
+                    var settled = calibrateOn(screen, fov, 3, range, 0);
+                    if (settled == null) continue;
+                    completed++;
+                    check(fitsScreen(settled, screen, fov, 3),
+                        "range " + range + " never mis-measures " + screen + "/" + fov + ": got " + settled);
+                }
+        check(completed > 1000, "the range sweep completes many calibrations: " + completed);
+        int skewed = 0;
+        for (int range = 1; range < Calibration.Attempt.RANGES.size(); range++)
+            for (int shift = -30; shift <= -6; shift += 6) {
+                if (calibrateOn(720, 70, 3, range, 0) == null) continue;
+                var shifted = calibrateOn(720, 70, 3, range, shift);
+                if (shifted != null && !fitsScreen(shifted, 720, 70, 3)) skewed++;
+            }
+        check(skewed > 0, "fault control: a probe pinned above its fixed Y yields a wrong result the sweep would catch");
         return fixtures;
     }
     private static void cornerClicks(Calibration.Attempt attempt, int screen, Calibration.Mapping probe) {
@@ -1089,8 +1139,10 @@ public final class MenuChecks {
         var standardExit = clickAt(standardProbe, 445, 4);
         engine.click(client.player, clickAt(standardProbe, 330, 4));
         var expandedProbe = host.body(client.id);
-        check(glyphs(expandedProbe).stream().filter("newline"::equals).count() == 37,
-            "the range action expands the active calibration probe");
+        check(expandedProbe != standardProbe
+            && glyphs(expandedProbe).stream().filter("newline"::equals).count() == Calibration.PROBE_ROWS - 1
+            && GsonComponentSerializer.gson().serialize(expandedProbe).contains("当前定位范围：2/"),
+            "the range action re-sends the same 16-row probe for the next range");
         engine.click(client.player, standardExit);
         check(host.body(client.id) == expandedProbe && renderer.active(client.id), "changing range invalidates the old actions");
         String cancel = clickAt(expandedProbe, 445, 4);

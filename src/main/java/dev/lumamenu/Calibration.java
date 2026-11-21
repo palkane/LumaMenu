@@ -7,8 +7,9 @@ import java.util.*;
 /**
  * Four corner targets determine one scale and the axis offset; units are GUI pixels.
  *
- * <p>The top corners are measured on a probe body sized to fit at the Dialog's preferred Y (header 33 + 30),
- * so its rows sit at a known GUI height. The bottom corners on a bottom-pinned body then give the GUI height.
+ * <p>The top corners are measured on a short probe body that every screen at least 236 high keeps at the Dialog's
+ * preferred Y (header 33 + 30), so its rows sit at a known GUI height; on a taller GUI the player picks a range whose
+ * first corner lands on it ({@link Attempt#RANGES}). The bottom corners on a bottom-pinned body then give the GUI height.
  * Each player gets a body that fills the screen down to the bottom margin without scrolling
  * ({@link Frame}).
  */
@@ -132,29 +133,21 @@ final class Calibration {
         /** Tall-body rows for a guess g: fits without scrolling and stays bottom-pinned for heights g−8..g+13. */
         static int heightRows(int guess) { return Math.max(PROBE_ROWS, Math.floorDiv(guess - 64, 9)); }
         private static final int HEIGHT_TRIES = 4;
-        private enum Probe {
-            STANDARD(PROBE_ROWS, TARGETS.getFirst().x, "标准"),
-            LARGE(38, -.26, "大窗口"),
-            EXTRA_LARGE(62, -.17, "超大窗口");
-
-            final int rows;
-            final double left;
-            final String label;
-            Probe(int rows, double left, String label) { this.rows = rows; this.left = left; this.label = label; }
-
-            Box grid(boolean right) {
-                int half = WIDTH / 2;
-                if (this == STANDARD) return new Box(0, 0, WIDTH, rows * 9);
-                return new Box(right ? half : 0, 0, half, rows * 9);
-            }
-        }
+        /**
+         * First (top-left) corner of each range. A taller GUI puts the axis further down and spreads the corners wider,
+         * so its corner sits higher and nearer the axis to land on the same probe. Every range uses the 16-row probe,
+         * which keeps its fixed Y on every screen: a range that does not suit the screen only leaves the cross off the
+         * grid, it cannot skew the measured height.
+         */
+        static final List<Point> RANGES = List.of(TARGETS.getFirst(), new Point(-.084, -.281), new Point(-.135, -.45),
+            new Point(-.185, -.616), new Point(-.296, -.986), new Point(-.405, -1.35));
 
         private final int[] steps;
         private final List<Point> samples = new ArrayList<>();
         private final List<Point> targets = new ArrayList<>(List.of(TARGETS.getFirst()));
-        private Probe probe = Probe.STANDARD;
+        private int range;
         private int round, tries, tallRows, guess, lowest = 0, highest = Integer.MAX_VALUE;
-        private Box area = probe.grid(false), bounds = area;
+        private Box area = new Box(0, 0, WIDTH, PROBE_HEIGHT), bounds = area;
         private Fit candidate;
         private Result settled;
         private boolean complete;
@@ -172,16 +165,14 @@ final class Calibration {
         float markerScale() { return .004f / (1 << Math.min(round, 2)); }
         Point target() { return targets.get(targetIndex()); }
         /** Dialog body rows of the current step. */
-        int rows() { return bottom() ? tallRows : probe.rows; }
+        int rows() { return bottom() ? tallRows : PROBE_ROWS; }
         boolean complete() { return complete; }
         boolean canChangeRange() { return !complete && samples.isEmpty() && round == 0; }
-        String rangeLabel() { return probe.label; }
+        String rangeLabel() { return range == 0 ? "标准" : (range + 1) + "/" + RANGES.size(); }
         void changeRange() {
             if (!canChangeRange()) throw new IllegalStateException("定位已开始");
-            Probe[] ranges = Probe.values();
-            probe = ranges[(probe.ordinal() + 1) % ranges.length];
-            targets.set(0, new Point(probe.left, TARGETS.getFirst().y));
-            area = probe.grid(false);
+            range = (range + 1) % RANGES.size();
+            targets.set(0, RANGES.get(range));
         }
         /** The standard probe mapping from the top two corners. */
         Mapping result() {
@@ -217,10 +208,10 @@ final class Calibration {
             switch (samples.size()) {
                 case 1 -> {
                     // The camera axis is within a few units of the body centre 226, so the first X gives the scale.
-                    double scale = (WIDTH / 2.0 - samples.getFirst().x) / -probe.left;
+                    double scale = (WIDTH / 2.0 - samples.getFirst().x) / -targets.getFirst().x;
                     if (scale <= 0) throw new IllegalArgumentException("两次点击不一致，请重新定位");
-                    targets.add(new Point(Math.min(MAX_SIDE, SIDE_ROOM / scale), TARGETS.getFirst().y));
-                    area = probe.grid(true);
+                    targets.add(new Point(Math.min(MAX_SIDE, SIDE_ROOM / scale), targets.getFirst().y));
+                    area = new Box(0, 0, WIDTH, PROBE_HEIGHT);
                 }
                 case 2 -> {
                     candidate = fitProbe(samples, targets);
@@ -297,7 +288,7 @@ final class Calibration {
                 measure(shortBody || highest - lowest <= 21 ? lowest + 8 : highest - 13);
                 return;
             }
-            Frame frame = probe != Probe.STANDARD && slack > 0 ? Frame.of(screen, 5) : Frame.of(screen);
+            Frame frame = range != 0 && slack > 0 ? Frame.of(screen, 5) : Frame.of(screen);
             // Both bodies are pinned to the same bottom: tall row r is frame row r − tallRows + 20 + trail.
             settled = new Result(new Mapping(scale, scale, ox, low + 180 - 9 * tallRows + 9 * frame.trail()), frame);
             complete = true;

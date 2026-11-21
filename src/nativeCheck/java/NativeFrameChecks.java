@@ -31,10 +31,12 @@ final class NativeFrameChecks {
             var body = ComponentSerialization.CODEC.parse(JsonOps.INSTANCE, probeCase.get("body")).getOrThrow();
             var layout = DialogGeometry.measure(body, font, 462, DialogGeometry.Mode.CORNER, width, screen);
             check(layout.bodyY() + 10 == probeTop && layout.maxScroll() == 0,
-                "expanded probe keeps its preferred Y at " + width + "x" + screen);
-            check(NativeDialogChecks.click(body, font, 462, width, screen,
-                4 + probeCase.get("x").getAsFloat(), 10 + probeCase.get("y").getAsFloat())
-                .equals(java.util.List.of(Identifier.parse("lumamenu:cell"))), "expanded probe receives the cross's click");
+                "every range keeps the probe at its preferred Y at " + width + "x" + screen);
+            var crossClick = NativeDialogChecks.click(body, font, 462, width, screen,
+                4 + probeCase.get("x").getAsFloat(), 10 + probeCase.get("y").getAsFloat());
+            check(crossClick.equals(java.util.List.of(Identifier.parse("lumamenu:cell"))),
+                "the chosen range receives the cross's click at " + screen + " (" + probeCase.get("x") + ", "
+                    + probeCase.get("y") + "): " + crossClick);
             check(NativeDialogChecks.click(body, font, 462, width, screen, 340, 14)
                 .equals(java.util.List.of(Identifier.parse("lumamenu:range"))), "the range switch receives a real click");
             check(NativeDialogChecks.click(body, font, 462, width, screen, 450, 10)
