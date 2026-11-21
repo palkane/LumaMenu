@@ -1,10 +1,12 @@
 package dev.lumamenu;
 
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerActionBar;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChangeGameState;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextComponent;
+import net.kyori.adventure.text.format.TextColor;
 import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
 
@@ -20,7 +22,8 @@ import java.util.function.BiConsumer;
  *   vehicles); the server's game mode is untouched and closing sends the real mode and abilities again.</li>
  *   <li>Crosshair: with {@code replace-crosshair} the pack hides the vanilla sprite and a HUD plugin draws
  *   {@link #CROSSHAIR_FONT} in the action bar, which the pack's text shader moves to the screen centre. While a menu
- *   is open that font is cut out of every action bar this player receives.</li>
+ *   is open that font is cut out of every action bar this player receives. On close it is restored immediately,
+ *   together with any still-recent action bar message.</li>
  * </ul>
  */
 final class ClientHud {
@@ -30,42 +33,78 @@ final class ClientHud {
     /** Text colour the GUI text shader recognises; its quarter (63, 1, 62) is the glyph's shadow. */
     static final int CROSSHAIR_COLOR = 0xFC04F8;
 
+    private static final Component CROSSHAIR_TEXT = Component.text(CROSSHAIR, TextColor.color(CROSSHAIR_COLOR))
+        .font(CROSSHAIR_FONT);
+    private static final long ACTION_BAR_FRESH_NANOS = java.time.Duration.ofSeconds(2).toNanos();
+    private record ActionBar(Component text, boolean hasCrosshair, long time) {}
+    private static final class HiddenCrosshair {
+        volatile ActionBar latest;
+    }
+
     private final BiConsumer<Player, PacketWrapper<?>> sender;
-    private final Set<UUID> menus = ConcurrentHashMap.newKeySet();
+    private final java.util.function.LongSupplier now;
+    private final Map<UUID, HiddenCrosshair> crosshairs = new ConcurrentHashMap<>();
     /** Players whose client was switched to creative; netty threads read it. */
     private final Set<UUID> creative = ConcurrentHashMap.newKeySet();
 
-    ClientHud(BiConsumer<Player, PacketWrapper<?>> sender) { this.sender = sender; }
+    ClientHud(BiConsumer<Player, PacketWrapper<?>> sender) { this(sender, System::nanoTime); }
 
-    void begin(Player player, boolean hideExperience) {
+    ClientHud(BiConsumer<Player, PacketWrapper<?>> sender, java.util.function.LongSupplier now) {
+        this.sender = sender;
+        this.now = now;
+    }
+
+    void begin(Player player, boolean hideExperience, boolean replaceCrosshair) {
         UUID id = player.getUniqueId();
-        menus.add(id);
+        if (replaceCrosshair) crosshairs.put(id, new HiddenCrosshair());
         GameMode mode = player.getGameMode();
         if (!hideExperience || (mode != GameMode.SURVIVAL && mode != GameMode.ADVENTURE)) return;
         creative.add(id);
         try { sender.accept(player, gameMode(GameMode.CREATIVE)); }
         catch (RuntimeException error) {
             creative.remove(id);
+            crosshairs.remove(id);
             throw error;
         }
     }
 
     void end(Player player) {
         UUID id = player.getUniqueId();
-        menus.remove(id);
-        if (!creative.remove(id) || !player.isOnline()) return;
-        sender.accept(player, gameMode(player.getGameMode()));
-        // The client reset its abilities with the mode; resend the server's (allowed/active flight, speeds).
-        player.setFlySpeed(player.getFlySpeed());
+        HiddenCrosshair hidden = crosshairs.remove(id);
+        boolean restoreMode = creative.remove(id);
+        if (!player.isOnline()) return;
+        try {
+            if (restoreMode) {
+                sender.accept(player, gameMode(player.getGameMode()));
+                // The client reset its abilities with the mode; resend the server's (allowed/active flight, speeds).
+                player.setFlySpeed(player.getFlySpeed());
+            }
+        } finally {
+            if (hidden != null) {
+                ActionBar latest = hidden.latest;
+                Component restored = CROSSHAIR_TEXT;
+                if (latest != null && now.getAsLong() - latest.time < ACTION_BAR_FRESH_NANOS)
+                    restored = latest.hasCrosshair ? latest.text : latest.text.append(CROSSHAIR_TEXT);
+                sender.accept(player, new WrapperPlayServerActionBar(restored));
+            }
+        }
     }
 
     void forget(UUID player) {
-        menus.remove(player);
+        crosshairs.remove(player);
         creative.remove(player);
     }
 
     /** Netty-visible pre-check, so other players' action bars are never decoded. */
-    boolean menu(UUID player) { return menus.contains(player); }
+    boolean hidingCrosshair(UUID player) { return crosshairs.containsKey(player); }
+
+    Component actionBar(UUID player, Component text) {
+        HiddenCrosshair hidden = crosshairs.get(player);
+        if (hidden == null) return text;
+        Component stripped = withoutCrosshair(text);
+        hidden.latest = new ActionBar(text, stripped != text, now.getAsLong());
+        return stripped;
+    }
     boolean creative(UUID player) { return creative.contains(player); }
 
     static WrapperPlayServerChangeGameState gameMode(GameMode mode) {

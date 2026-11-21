@@ -588,6 +588,7 @@ public final class MenuChecks {
         json.addProperty("probeRows", Calibration.PROBE_ROWS);
         json.addProperty("probeTop", Calibration.PROBE_TOP);
         json.add("screens", screens);
+        json.add("largeProbes", largeProbes());
         Files.createDirectories(Path.of("build/native-evidence"));
         Files.writeString(Path.of("build/native-evidence/screen-frames.json"), json.toString());
 
@@ -854,6 +855,55 @@ public final class MenuChecks {
         int bodyY = height > screen - 38 ? 33 : Math.min(63, screen - 5 - height);
         return new Calibration.Point(point.x(), Calibration.PROBE_TOP + point.y() - 10 - bodyY);
     }
+    private static JsonArray largeProbes() {
+        JsonArray fixtures = new JsonArray();
+        for (int screen : new int[]{540, 720, 900, 1080})
+            for (int fov : new int[]{60, 70, 90, 110})
+                for (int clicks : new int[]{2, 3, 4}) {
+                    double scale = (screen / 2.0) / Math.tan(Math.toRadians(fov / 2.0));
+                    var attempt = new Calibration.Attempt(clicks);
+                    if (screen == 720 && fov == 90 && clicks == 3) {
+                        var old = attempt.target();
+                        check(screen / 2.0 + old.y() * scale - Calibration.PROBE_TOP >= Calibration.PROBE_HEIGHT,
+                            "fault control: a 1440p framebuffer at GUI 2x puts the old cross below the grid");
+                    }
+                    attempt.changeRange();
+                    if (screen >= 900) attempt.changeRange();
+                    int probeRows = attempt.rows();
+                    check(screen >= 86 + 9 * probeRows, "the selected probe has its fixed Y without scrolling");
+                    for (int i = 0; i < 60 && !attempt.complete(); i++) {
+                        int rows = attempt.rows(), contentHeight = 9 * rows + 18;
+                        int bodyY = Math.max(33, Math.min(63, screen - 5 - contentHeight));
+                        var target = attempt.target();
+                        var hit = new Calibration.Point(226.5 + target.x() * scale,
+                            screen / 2.0 + target.y() * scale - bodyY - 10);
+                        var cell = cellAt(attempt, hit);
+                        if (i == 0 && fov == 90 && clicks == 3) {
+                            var event = ClickEvent.custom(Key.key("lumamenu:cell"), null);
+                            var range = ClickEvent.custom(Key.key("lumamenu:range"), null);
+                            var exit = ClickEvent.custom(Key.key("lumamenu:exit"), null);
+                            var body = HitSurface.body(List.of(new HitSurface.Hit(cell, event, null)),
+                                exit, true, rows, range, attempt.rangeLabel());
+                            var fixture = new JsonObject();
+                            fixture.addProperty("screen", screen);
+                            fixture.addProperty("x", hit.x()); fixture.addProperty("y", hit.y());
+                            fixture.add("body", JsonParser.parseString(GsonComponentSerializer.gson().serialize(body)));
+                            fixtures.add(fixture);
+                        }
+                        attempt.choose(cell);
+                    }
+                    var settled = attempt.settled();
+                    double top = screen - 193 - 9 * settled.frame().trail();
+                    int tolerance = clicks == 2 ? 5 : 2;
+                    check(Math.abs(settled.frame().screen() - screen) <= tolerance
+                        && Math.abs(settled.mapping().oy() - (screen / 2.0 - top)) <= tolerance
+                        && Math.abs(settled.mapping().sx() - scale) <= tolerance
+                        && 9 * settled.frame().rows() + 18 <= screen - 38,
+                        "large GUI completes all four corners and fits the actual frame at " + screen + "/" + fov + "/" + clicks
+                            + ": expected " + scale + "/" + (screen / 2.0 - top) + ", got " + settled);
+                }
+        return fixtures;
+    }
     private static void cornerClicks(Calibration.Attempt attempt, int screen, Calibration.Mapping probe) {
         for (int i = 0; i < 60 && !attempt.complete(); i++)
             attempt.choose(cellAt(attempt, where(attempt, screen, probe)));
@@ -1035,7 +1085,15 @@ public final class MenuChecks {
         check(!quitting.active() && !renderer.active(client.id), "disconnect removes session without writes to disconnected client");
         client.online = true;
         engine.measure(client.player);
-        String cancel = clickAt(host.body(client.id), 445, 4);
+        var standardProbe = host.body(client.id);
+        var standardExit = clickAt(standardProbe, 445, 4);
+        engine.click(client.player, clickAt(standardProbe, 330, 4));
+        var expandedProbe = host.body(client.id);
+        check(glyphs(expandedProbe).stream().filter("newline"::equals).count() == 37,
+            "the range action expands the active calibration probe");
+        engine.click(client.player, standardExit);
+        check(host.body(client.id) == expandedProbe && renderer.active(client.id), "changing range invalidates the old actions");
+        String cancel = clickAt(expandedProbe, 445, 4);
         engine.click(client.player, cancel);
         check(align.get(client.id).equals(MAPPING) && !renderer.active(client.id), "Dialog X calibration cancellation preserves previous mapping");
         engine.measure(client.player);
@@ -3236,40 +3294,41 @@ public final class MenuChecks {
     private static void clientHud() throws Exception {
         Client client = new Client();
         List<PacketWrapper<?>> packets = new ArrayList<>();
-        ClientHud hud = new ClientHud((p, packet) -> { serialize(packet); packets.add(packet); });
-        check(!hud.menu(client.id) && !hud.creative(client.id), "players without a menu skip action bar decoding");
-        hud.begin(client.player, true);
-        check(hud.menu(client.id) && hud.creative(client.id) && packets.size() == 1
+        var time = new java.util.concurrent.atomic.AtomicLong();
+        ClientHud hud = new ClientHud((p, packet) -> { serialize(packet); packets.add(packet); }, time::get);
+        check(!hud.hidingCrosshair(client.id) && !hud.creative(client.id), "players without a menu skip action bar decoding");
+        hud.begin(client.player, true, false);
+        check(!hud.hidingCrosshair(client.id) && hud.creative(client.id) && packets.size() == 1
             && packets.getFirst() instanceof WrapperPlayServerChangeGameState change
             && change.getReason() == WrapperPlayServerChangeGameState.Reason.CHANGE_GAME_MODE && change.getValue() == 1f,
             "a survival player's client alone is told creative, which draws no experience bar");
         hud.end(client.player);
-        check(!hud.menu(client.id) && !hud.creative(client.id) && packets.size() == 2
+        check(!hud.hidingCrosshair(client.id) && !hud.creative(client.id) && packets.size() == 2
             && ((WrapperPlayServerChangeGameState) packets.get(1)).getValue() == 0f && client.abilityUpdates == 1,
             "closing sends the real game mode and the server's abilities again");
         hud.end(client.player);
         check(packets.size() == 2 && client.abilityUpdates == 1, "a closed HUD is not restored twice");
         client.mode = org.bukkit.GameMode.ADVENTURE;
-        hud.begin(client.player, true);
+        hud.begin(client.player, true, false);
         hud.end(client.player);
         check(packets.size() == 4 && ((WrapperPlayServerChangeGameState) packets.get(3)).getValue() == 2f,
             "adventure players get adventure back");
         for (org.bukkit.GameMode mode : List.of(org.bukkit.GameMode.CREATIVE, org.bukkit.GameMode.SPECTATOR)) {
             client.mode = mode;
-            hud.begin(client.player, true);
-            check(hud.menu(client.id) && !hud.creative(client.id) && packets.size() == 4,
+            hud.begin(client.player, true, false);
+            check(!hud.hidingCrosshair(client.id) && !hud.creative(client.id) && packets.size() == 4,
                 mode + " players already have no experience bar and are left alone");
             hud.end(client.player);
         }
         client.mode = org.bukkit.GameMode.SURVIVAL;
-        hud.begin(client.player, false);
-        check(hud.menu(client.id) && !hud.creative(client.id) && packets.size() == 4,
+        hud.begin(client.player, false, true);
+        check(hud.hidingCrosshair(client.id) && !hud.creative(client.id) && packets.size() == 4,
             "hide-experience-bar: false sends no game mode, the crosshair is still cut");
         hud.forget(client.id);
-        check(!hud.menu(client.id), "quitting forgets the HUD state");
+        check(!hud.hidingCrosshair(client.id), "quitting forgets the HUD state");
         ClientHud broken = new ClientHud((p, packet) -> { throw new IllegalStateException("send failed"); });
-        rejects(() -> broken.begin(client.player, true), "game mode send failures are visible");
-        check(!broken.creative(client.id), "a failed creative switch is not restored later");
+        rejects(() -> broken.begin(client.player, true, true), "game mode send failures are visible");
+        check(!broken.creative(client.id) && !broken.hidingCrosshair(client.id), "a failed open clears both HUD masks");
         for (var mode : org.bukkit.GameMode.values())
             serialize(ClientHud.gameMode(mode));
 
@@ -3286,6 +3345,34 @@ public final class MenuChecks {
             "text inheriting the crosshair font goes too; a child with another font stays");
         Component plain = Component.text("a").append(Component.text("\uE000").font(Key.key("other", "font")));
         check(ClientHud.withoutCrosshair(plain) == plain, "action bars without the crosshair font are not re-encoded");
+        packets.clear();
+        hud.begin(client.player, false, true);
+        check(hud.actionBar(client.id, bar).equals(stripped), "the active menu hides the incoming crosshair");
+        hud.end(client.player);
+        check(packets.size() == 1 && ((WrapperPlayServerActionBar) packets.getFirst()).getActionBarText().equals(bar),
+            "closing immediately restores the latest composed action bar without duplicating the crosshair");
+        hud.end(client.player);
+        check(packets.size() == 1 && hud.actionBar(client.id, bar) == bar, "closing releases the action bar mask once");
+        hud.begin(client.player, false, true);
+        hud.actionBar(client.id, plain);
+        hud.end(client.player);
+        var restored = ((WrapperPlayServerActionBar) packets.getLast()).getActionBarText();
+        check(ClientHud.withoutCrosshair(restored).compact().equals(plain.compact()),
+            "recent action-bar text without a crosshair survives closing");
+        hud.begin(client.player, false, true);
+        hud.actionBar(client.id, bar);
+        time.addAndGet(java.time.Duration.ofSeconds(3).toNanos());
+        hud.end(client.player);
+        check(((WrapperPlayServerActionBar) packets.getLast()).getActionBarText().equals(cross),
+            "closing restores only the crosshair, not an expired HUD message");
+        hud.begin(client.player, false, true);
+        hud.end(client.player);
+        check(packets.size() == 4 && ((WrapperPlayServerActionBar) packets.getLast()).getActionBarText().equals(cross),
+            "crosshair is restored even if the HUD plugin sent nothing while the menu was open");
+        hud.begin(client.player, false, true);
+        client.online = false;
+        hud.end(client.player);
+        check(packets.size() == 4 && !hud.hidingCrosshair(client.id), "disconnect discards the HUD without sending packets");
     }
 
     private static void clientInventory() throws Exception {
@@ -3850,6 +3937,11 @@ public final class MenuChecks {
                     if (px >= x && px < x + 9 && py >= y && py < y + 9 && component.clickEvent() != null)
                         return identifier(component.clickEvent());
                     x += 9;
+                } else if (styled.font() == null) {
+                    int width = Math.round(TextLayout.advance(code, false));
+                    if (px >= x && px < x + width && py >= y && py < y + 9 && component.clickEvent() != null)
+                        return identifier(component.clickEvent());
+                    x += width;
                 }
             }
         }

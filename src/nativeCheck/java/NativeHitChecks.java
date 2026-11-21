@@ -94,7 +94,9 @@ public final class NativeHitChecks {
         }
         return quads;
     }
-    static Font font() {
+    static Font font() { return font(List.of()); }
+
+    private static Font font(List<FontWidths.Run> defaultWidths) {
         return new Font(new Font.Provider() {
             public GlyphSource glyphs(FontDescription description) {
                 String id = ((FontDescription.Resource) description).id().toString();
@@ -102,6 +104,10 @@ public final class NativeHitChecks {
                     public BakedGlyph getGlyph(int code) {
                         var glyph = fonts.getOrDefault(id, Map.of()).get(code);
                         if (glyph == null && (code == 10 || code == 32)) return bake(new EmptyGlyph(4));
+                        if (glyph == null && id.equals("minecraft:default"))
+                            for (var run : defaultWidths)
+                                if (code >= run.start() && code < run.start() + run.length())
+                                    return bake(new EmptyGlyph(run.advance()));
                         if (glyph == null) throw new AssertionError("missing " + id + " glyph " + code);
                         return glyph;
                     }
@@ -366,8 +372,8 @@ public final class NativeHitChecks {
             NativeModeChecks.run(root);
             NativeCameraRigChecks.run(root);
             NativeImageChecks.run(root);
-            TextLayoutChecks.run(root);
-            NativeFrameChecks.run(root, font());
+            var defaultWidths = TextLayoutChecks.run(root);
+            NativeFrameChecks.run(root, font(defaultWidths));
             // replace-crosshair off (fixture pack), then a pack exported with it on.
             NativeCrosshairChecks.invisible(font());
             load(root.resolve("crosshair-pack"), "crosshair", false);

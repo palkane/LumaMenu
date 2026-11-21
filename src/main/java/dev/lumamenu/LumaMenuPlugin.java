@@ -431,16 +431,16 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 var type = event.getPacketType();
                 if (type != PacketType.Play.Server.ACTION_BAR && type != PacketType.Play.Server.SYSTEM_CHAT_MESSAGE) return;
                 UUID id = event.getUser().getUUID();
-                if (id == null || !hud.menu(id) || event.isCancelled()) return;
+                if (id == null || !hud.hidingCrosshair(id) || event.isCancelled()) return;
                 if (type == PacketType.Play.Server.ACTION_BAR) {
                     var packet = new WrapperPlayServerActionBar(event);
-                    Component text = packet.getActionBarText(), stripped = ClientHud.withoutCrosshair(text);
+                    Component text = packet.getActionBarText(), stripped = hud.actionBar(id, text);
                     if (stripped == text) return;
                     packet.setActionBarText(stripped);
                 } else {
                     var packet = new WrapperPlayServerSystemChatMessage(event);
                     if (!packet.isOverlay()) return;
-                    Component text = packet.getMessage(), stripped = ClientHud.withoutCrosshair(text);
+                    Component text = packet.getMessage(), stripped = hud.actionBar(id, text);
                     if (stripped == text) return;
                     packet.setMessage(stripped);
                 }
@@ -468,7 +468,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         @Override public int calibrationClicks() { return settings.calibrationClicks(); }
         @Override public void begin(Player player) {
             inventory.begin(player);
-            try { hud.begin(player, settings.hideExperienceBar()); }
+            try { hud.begin(player, settings.hideExperienceBar(), settings.replaceCrosshair()); }
             catch (RuntimeException error) {
                 inventory.end(player);
                 throw error;

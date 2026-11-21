@@ -1,5 +1,8 @@
 import com.google.gson.JsonParser;
+import com.mojang.serialization.JsonOps;
 import net.minecraft.client.gui.Font;
+import net.minecraft.network.chat.ComponentSerialization;
+import net.minecraft.resources.Identifier;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +24,21 @@ final class NativeFrameChecks {
             var layout = DialogGeometry.measure(probe, font, 462, DialogGeometry.Mode.CORNER, 480, screen);
             check(layout.bodyY() + 10 == probeTop && layout.maxScroll() == 0,
                 "calibration probe keeps its preferred Y at 480x" + screen);
+        }
+        for (var element : json.getAsJsonArray("largeProbes")) {
+            var probeCase = element.getAsJsonObject();
+            int screen = probeCase.get("screen").getAsInt(), width = (int) Math.round(screen * 16 / 9.0);
+            var body = ComponentSerialization.CODEC.parse(JsonOps.INSTANCE, probeCase.get("body")).getOrThrow();
+            var layout = DialogGeometry.measure(body, font, 462, DialogGeometry.Mode.CORNER, width, screen);
+            check(layout.bodyY() + 10 == probeTop && layout.maxScroll() == 0,
+                "expanded probe keeps its preferred Y at " + width + "x" + screen);
+            check(NativeDialogChecks.click(body, font, 462, width, screen,
+                4 + probeCase.get("x").getAsFloat(), 10 + probeCase.get("y").getAsFloat())
+                .equals(java.util.List.of(Identifier.parse("lumamenu:cell"))), "expanded probe receives the cross's click");
+            check(NativeDialogChecks.click(body, font, 462, width, screen, 340, 14)
+                .equals(java.util.List.of(Identifier.parse("lumamenu:range"))), "the range switch receives a real click");
+            check(NativeDialogChecks.click(body, font, 462, width, screen, 450, 10)
+                .equals(java.util.List.of(Identifier.parse("lumamenu:exit"))), "the range switch keeps the corner close aligned");
         }
         // Height step (Calibration.Attempt.heightRows): a guess g gives a tall body that is bottom-pinned and does not
         // scroll on every screen g−8..g+13, so its Y = screen−23−9·rows shows the screen height.

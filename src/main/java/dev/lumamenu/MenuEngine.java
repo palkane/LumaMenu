@@ -1035,11 +1035,15 @@ final class MenuEngine implements LumaMenuApi {
         displays.calibration(session.player, session.attempt);
         session.escape = false;
         ClickEvent exit = actions.bind(session::close);
+        ClickEvent range = session.attempt.canChangeRange() ? actions.bind(() -> {
+            session.check();
+            session.attempt.changeRange();
+            presentCalibration(session);
+        }) : null;
         tokens.publish(session.player.getUniqueId(), actions);
         stamps.put(session.player.getUniqueId(), new Stamp(session.id, actions.nonce));
-        // Always the corner list: the short probe body at its fixed Y, then the tall body that measures the height.
         host.show(session.player, HitSurface.body(hits, exit, debug.contains(session.player.getUniqueId()),
-                session.attempt.rows()), exit, HitSurface.BODY_WIDTH, true, false);
+                session.attempt.rows(), range, session.attempt.rangeLabel()), exit, HitSurface.BODY_WIDTH, true, false);
     }
 
     @Override public void close(Player player) { close(player, Reason.CLOSED, true); }

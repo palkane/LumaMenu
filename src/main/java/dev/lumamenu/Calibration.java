@@ -7,17 +7,16 @@ import java.util.*;
 /**
  * Four corner targets determine one scale and the axis offset; units are GUI pixels.
  *
- * <p>The top corners are measured on a short probe body that every screen at least 236 high keeps at the Dialog's
- * preferred Y (header 33 + 30), so its rows sit at a known GUI height; the bottom corners on a bottom-pinned tall body
- * then give the GUI height. Each player gets a body that fills the screen down to the bottom margin without scrolling
+ * <p>The top corners are measured on a probe body sized to fit at the Dialog's preferred Y (header 33 + 30),
+ * so its rows sit at a known GUI height. The bottom corners on a bottom-pinned body then give the GUI height.
+ * Each player gets a body that fills the screen down to the bottom margin without scrolling
  * ({@link Frame}).
  */
 final class Calibration {
     static final int WIDTH = 452, HEIGHT = 180;
     /**
-     * Cell sizes per click on one corner, the last being the final precision. Every step must keep a Dialog body at
-     * most about 105 cells: the first covers the 452x144 probe (or 96x80 around a bottom corner), the next the chosen
-     * cell widened to at most {@link #REFINE_CELLS} cells across (see {@link Attempt#widen}). Clicks are whole units,
+     * Cell sizes per click on one corner, the last being the final precision. After the initial grid, the chosen
+     * cell widens to at most {@link #REFINE_CELLS} cells across (see {@link Attempt#widen}). Clicks are whole units,
      * so 1 is as fine as it gets: a fourth click adds no precision.
      */
     static final Map<Integer, int[]> STEPS = Map.of(2, new int[]{27, 3}, 3, new int[]{32, 8, 1}, 4, new int[]{32, 8, 2, 1});
@@ -50,8 +49,9 @@ final class Calibration {
          * bottom 5). It is that tall, so the native layout pins it to the bottom; the 20-row box then starts at
          * GUI y screen−193−9·trail. Trailing rows keep the box near the screen centre as on a 252-high screen.
          */
-        static Frame of(int screen) {
-            int rows = Math.max(HitSurface.ROWS, Math.floorDiv(screen - 56 - MARGIN, 9));
+        static Frame of(int screen) { return of(screen, MARGIN); }
+        static Frame of(int screen, int margin) {
+            int rows = Math.max(HitSurface.ROWS, Math.floorDiv(screen - 56 - margin, 9));
             int trail = Math.clamp(Math.round((screen / 2.0 - 126) / 9), 0, rows - HitSurface.ROWS);
             return new Frame(screen, rows - HitSurface.ROWS - trail, trail);
         }
@@ -99,6 +99,13 @@ final class Calibration {
      * wide X span also steadies Y. Least squares over both targets; a pair whose axes disagree is a missed click.
      */
     static Mapping fit(List<Point> samples, List<Point> targets) {
+        Fit fit = fitProbe(samples, targets);
+        return new Mapping(fit.scale, fit.scale, fit.ox, fit.oy);
+    }
+
+    private record Fit(double scale, double ox, double oy) {}
+
+    private static Fit fitProbe(List<Point> samples, List<Point> targets) {
         if (samples.size() != 2 || targets.size() != 2) throw new IllegalArgumentException("需要两个目标点");
         Point first = samples.getFirst(), last = samples.getLast();
         double tx = targets.getLast().x - targets.getFirst().x, ty = targets.getLast().y - targets.getFirst().y;
@@ -111,7 +118,7 @@ final class Calibration {
         double scale = (dx * tx + dy * ty) / (tx * tx + ty * ty);
         double ox = (first.x + last.x - scale * (targets.getFirst().x + targets.getLast().x)) / 2;
         double oy = (first.y + last.y - scale * (targets.getFirst().y + targets.getLast().y)) / 2;
-        return new Mapping(scale, scale, ox, oy);
+        return new Fit(scale, ox, oy);
     }
 
     /**
@@ -125,12 +132,30 @@ final class Calibration {
         /** Tall-body rows for a guess g: fits without scrolling and stays bottom-pinned for heights g−8..g+13. */
         static int heightRows(int guess) { return Math.max(PROBE_ROWS, Math.floorDiv(guess - 64, 9)); }
         private static final int HEIGHT_TRIES = 4;
+        private enum Probe {
+            STANDARD(PROBE_ROWS, TARGETS.getFirst().x, "标准"),
+            LARGE(38, -.26, "大窗口"),
+            EXTRA_LARGE(62, -.17, "超大窗口");
+
+            final int rows;
+            final double left;
+            final String label;
+            Probe(int rows, double left, String label) { this.rows = rows; this.left = left; this.label = label; }
+
+            Box grid(boolean right) {
+                int half = WIDTH / 2;
+                if (this == STANDARD) return new Box(0, 0, WIDTH, rows * 9);
+                return new Box(right ? half : 0, 0, half, rows * 9);
+            }
+        }
+
         private final int[] steps;
         private final List<Point> samples = new ArrayList<>();
         private final List<Point> targets = new ArrayList<>(List.of(TARGETS.getFirst()));
+        private Probe probe = Probe.STANDARD;
         private int round, tries, tallRows, guess, lowest = 0, highest = Integer.MAX_VALUE;
-        private Box area = new Box(0, 0, WIDTH, PROBE_HEIGHT), bounds = area;
-        private Mapping candidate;
+        private Box area = probe.grid(false), bounds = area;
+        private Fit candidate;
         private Result settled;
         private boolean complete;
 
@@ -147,12 +172,21 @@ final class Calibration {
         float markerScale() { return .004f / (1 << Math.min(round, 2)); }
         Point target() { return targets.get(targetIndex()); }
         /** Dialog body rows of the current step. */
-        int rows() { return bottom() ? tallRows : PROBE_ROWS; }
+        int rows() { return bottom() ? tallRows : probe.rows; }
         boolean complete() { return complete; }
-        /** The probe mapping from the top two corners. */
+        boolean canChangeRange() { return !complete && samples.isEmpty() && round == 0; }
+        String rangeLabel() { return probe.label; }
+        void changeRange() {
+            if (!canChangeRange()) throw new IllegalStateException("定位已开始");
+            Probe[] ranges = Probe.values();
+            probe = ranges[(probe.ordinal() + 1) % ranges.length];
+            targets.set(0, new Point(probe.left, TARGETS.getFirst().y));
+            area = probe.grid(false);
+        }
+        /** The standard probe mapping from the top two corners. */
         Mapping result() {
             if (!complete) throw new IllegalStateException("定位尚未完成");
-            return candidate;
+            return new Mapping(candidate.scale, candidate.scale, candidate.ox, candidate.oy);
         }
         Result settled() {
             if (!complete) throw new IllegalStateException("定位尚未完成");
@@ -183,13 +217,13 @@ final class Calibration {
             switch (samples.size()) {
                 case 1 -> {
                     // The camera axis is within a few units of the body centre 226, so the first X gives the scale.
-                    double scale = (WIDTH / 2.0 - samples.getFirst().x) / -TARGETS.getFirst().x;
+                    double scale = (WIDTH / 2.0 - samples.getFirst().x) / -probe.left;
                     if (scale <= 0) throw new IllegalArgumentException("两次点击不一致，请重新定位");
                     targets.add(new Point(Math.min(MAX_SIDE, SIDE_ROOM / scale), TARGETS.getFirst().y));
-                    area = new Box(0, 0, WIDTH, PROBE_HEIGHT);
+                    area = probe.grid(true);
                 }
                 case 2 -> {
-                    candidate = fit(samples, targets);
+                    candidate = fitProbe(samples, targets);
                     measure((int) Math.round(2 * (PROBE_TOP + candidate.oy)));
                 }
                 case 3 -> area = around(targets.get(3));
@@ -211,7 +245,7 @@ final class Calibration {
         private void measure(int guess) {
             this.guess = guess;
             tallRows = heightRows(guess);
-            double scale = candidate.sx;
+            double scale = candidate.scale;
             double side = Math.min(MAX_SIDE, SIDE_ROOM / scale), down = Math.min(MAX_DOWN, (guess / 2.0 - 24) / scale);
             if (down < MIN_TARGET_Y) throw new IllegalArgumentException("屏幕太高或视野太小，无法定位");
             while (targets.size() > 2) targets.removeLast();
@@ -221,8 +255,8 @@ final class Calibration {
         }
         /** Cells around a bottom target's predicted place on the tall body (the guess may be off by tens of units). */
         private Box around(Point target) {
-            double x = candidate.ox + candidate.sx * target.x;
-            double y = PROBE_TOP + candidate.oy + candidate.sy * target.y - (guess - 13 - 9 * tallRows);
+            double x = candidate.ox + candidate.scale * target.x;
+            double y = PROBE_TOP + candidate.oy + candidate.scale * target.y - (guess - 13 - 9 * tallRows);
             int left = Math.clamp((long) Math.floor(x) - 48, 0, WIDTH - 1);
             int right = Math.clamp((long) Math.floor(x) + 48, left + 1, WIDTH);
             int top = Math.clamp((long) Math.floor(y) - 40, 0, 9 * tallRows - 1);
@@ -243,7 +277,7 @@ final class Calibration {
                 den += (targets.get(i).x - mtx) * (targets.get(i).x - mtx);
             }
             double scale = num / den, ox = mx - scale * mtx;
-            if (Math.abs(scale / candidate.sx - 1) > .15) throw new IllegalArgumentException("两次点击不一致，请重新定位");
+            if (Math.abs(scale / candidate.scale - 1) > .15) throw new IllegalArgumentException("两次点击不一致，请重新定位");
             double top = 0, low = 0;
             for (int i = 0; i < 2; i++) top += (samples.get(i).y - scale * targets.get(i).y) / 2;
             for (int i = 2; i < 4; i++) low += (samples.get(i).y - scale * targets.get(i).y) / 2;
@@ -263,7 +297,7 @@ final class Calibration {
                 measure(shortBody || highest - lowest <= 21 ? lowest + 8 : highest - 13);
                 return;
             }
-            Frame frame = Frame.of(screen);
+            Frame frame = probe != Probe.STANDARD && slack > 0 ? Frame.of(screen, 5) : Frame.of(screen);
             // Both bodies are pinned to the same bottom: tall row r is frame row r − tallRows + 20 + trail.
             settled = new Result(new Mapping(scale, scale, ox, low + 180 - 9 * tallRows + 9 * frame.trail()), frame);
             complete = true;

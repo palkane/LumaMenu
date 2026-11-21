@@ -235,8 +235,12 @@ final class HitSurface {
     static Component body(List<Hit> hits, ClickEvent exit, boolean debug) {
         return body(hits, exit, debug, Calibration.PROBE_ROWS);
     }
-    /** Calibration bodies: the probe's {@link Calibration#PROBE_ROWS} rows, or the height step's tall body. */
     static Component body(List<Hit> hits, ClickEvent exit, boolean debug, int rows) {
+        return body(hits, exit, debug, rows, null, "");
+    }
+    static final String CHANGE_RANGE = "十字在框外？换范围";
+    private static final int RANGE_X = 322;
+    static Component body(List<Hit> hits, ClickEvent exit, boolean debug, int rows, ClickEvent range, String rangeLabel) {
         var body = Component.text();
         for (int row = 0; row < rows; row++) {
             int y = row * 9;
@@ -245,7 +249,8 @@ final class HitSurface {
                 var box = hit.box;
                 int top = Math.max(y, box.y()), bottom = Math.min(y + 9, box.y() + box.height());
                 if (bottom <= top) continue;
-                int width = exit != null && row == 0 ? Math.min(box.width(), 442 - box.x()) : box.width();
+                int limit = row == 0 && range != null ? RANGE_X : row == 0 && exit != null ? 442 : Calibration.WIDTH;
+                int width = Math.min(box.width(), limit - box.x());
                 if (width <= 0) continue;
                 Component area = Component.text(Character.toString(glyph(top - y, bottom - top)).repeat(width))
                     .font(FONT).clickEvent(hit.click);
@@ -254,6 +259,14 @@ final class HitSurface {
                 body.append(space(box.x()));
                 if (debug) body.append(overlay(top - y, bottom - top, width, index));
                 body.append(area).append(space(-box.x() - width));
+            }
+            if (row == 0 && range != null) {
+                int width = 442 - RANGE_X;
+                body.append(space(RANGE_X)).append(Component.text(CHANGE_RANGE));
+                body.append(space(-Math.round(TextLayout.measure(CHANGE_RANGE))));
+                body.append(Component.text(Character.toString(glyph(0, 9)).repeat(width)).font(FONT).clickEvent(range)
+                    .hoverEvent(HoverEvent.showText(Component.text("当前定位范围：" + rangeLabel))));
+                body.append(space(-RANGE_X - width));
             }
             if (row == 0 && exit != null) appendClose(body, CALIBRATION_CHROME, exit);
             body.append(space(ADVANCE));

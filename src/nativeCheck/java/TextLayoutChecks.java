@@ -21,7 +21,7 @@ final class TextLayoutChecks {
         checks++;
     }
 
-    static void run(Path root) throws Exception {
+    static List<FontWidths.Run> run(Path root) throws Exception {
         String clientJar = System.getProperty("lumamenu.client", ""), assets = System.getProperty("lumamenu.assets", "");
         if (clientJar.isEmpty() || assets.isEmpty())
             throw new IllegalStateException("Set LUMAMENU_CLIENT_JAR and LUMAMENU_ASSETS_INDEX for the native text checks");
@@ -71,5 +71,6 @@ final class TextLayoutChecks {
         }
         check(!fixtures.isEmpty(), "text layout fixtures exercised");
         System.out.println("Native text layout checks passed: " + checks + "; width runs " + runs.size());
+        return runs;
     }
 }
