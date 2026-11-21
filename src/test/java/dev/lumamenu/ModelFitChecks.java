@@ -56,9 +56,28 @@ final class ModelFitChecks {
                             check(Math.abs(ratio - 1) < .00001, "complete rotated model fits configured size: " + mode);
                             check(bounds.getWidth() <= width + .0001 && bounds.getHeight() <= height + .0001,
                                 "model never overflows its size frame");
-                            check(Math.abs((p.sx() / p.sy()) - (raw.sx() / raw.sy())) < .00001
-                                && Math.abs((p.sx() / p.sz()) - (raw.sx() / raw.sz())) < .00001,
-                                "fitting is uniform and preserves XYZ stretch proportions");
+                            if (mode == RenderMode.ENHANCED)
+                                check(Math.abs((p.sx() / p.sy()) - (raw.sx() / raw.sy())) < .00001
+                                    && Math.abs((p.sx() / p.sz()) - (raw.sx() / raw.sz())) < .00001,
+                                    "fitting is uniform and preserves XYZ stretch proportions");
+                            else {
+                                // Compatible: the enhanced matrix with camera depth squashed, up to one uniform fit.
+                                var e = state.prepared(mapping, "fit", RenderMode.ENHANCED).getLast();
+                                var flat = new org.joml.Matrix3f().scaling(1, 1, DisplayRenderer.SQUASH);
+                                var compatible = linear(p).scale(1 / (float) p.depth());
+                                var expected = flat.mul(linear(e).scale(1 / (float) e.depth()));
+                                float fit = compatible.getColumn(0, new Vector3f()).length()
+                                    / expected.getColumn(0, new Vector3f()).length();
+                                // Float svdDecompose resolves the thin depth axis to about 1e-4 of the model size.
+                                float tolerance = 1e-5f * compatible.getColumn(0, new Vector3f()).length();
+                                for (int c = 0; c < 3; c++) {
+                                    var actual = compatible.getColumn(c, new Vector3f());
+                                    var wanted = expected.getColumn(c, new Vector3f()).mul(fit);
+                                    check(Math.abs(actual.x - wanted.x) < tolerance && Math.abs(actual.y - wanted.y) < tolerance
+                                        && Math.abs(actual.z - wanted.z) < 10 * tolerance,
+                                        "compatible fitting is uniform over the squashed enhanced matrix");
+                                }
+                            }
                             var center = pose(p).transformPosition(new Vector3f());
                             var authoredCenter = pose(raw).transformPosition(new Vector3f());
                             if (mode == RenderMode.COMPATIBLE) center.div((float) p.depth());
@@ -93,6 +112,11 @@ final class ModelFitChecks {
         }
         Files.writeString(output.resolve("size-fit-result.json"), new Gson().toJson(Map.of("checks", checks, "failed", 0)));
         System.out.println("Model size fit checks passed: " + checks);
+    }
+
+    private static org.joml.Matrix3f linear(DisplayRenderer.Prepared p) {
+        return new org.joml.Matrix3f().rotation(new Quaternionf(p.qx(), p.qy(), p.qz(), p.qw()))
+            .scale(p.sx(), p.sy(), p.sz()).rotate(new Quaternionf(p.rqx(), p.rqy(), p.rqz(), p.rqw()));
     }
 
     private static Matrix4f pose(DisplayRenderer.Prepared p) {

@@ -198,6 +198,8 @@ final class TransformChecks {
         var ordinary = MenuCache.compile(oldPages, List.of(mapping));
         var json = new Gson().toJsonTree(ordinary).getAsJsonObject();
         json.remove("lookDownProfiles");
+        json.remove("compatibleProfiles");
+        json.remove("enhancedProfiles");
         removeFields(json, Set.of("transforms", "geometry", "rqx", "rqy", "rqz", "rqw"));
         var restored = new Gson().fromJson(json, MenuCache.State.class);
         check(ordinary.equals(restored), "old format-2 cache restores without recompiling or moving any node");

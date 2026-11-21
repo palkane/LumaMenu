@@ -26,15 +26,15 @@ final class ViewFacingChecks {
                     var state = MenuCache.compile(pages, List.of(mapping), 1);
                     var p = state.prepared(mapping, "facing").getLast();
                     var center = pose(p).transformPosition(Transforms.center(p.visual()));
-                    var normal = pose(p).transformDirection(new Vector3f(0, 0, 1)).normalize();
-                    var towardEye = new Vector3f(center).negate().normalize();
-                    check(normal.distance(towardEye) < .00001,
-                        "zero rotation faces actual player eye at " + kind + "/" + Arrays.toString(position));
+                    var normal = new org.joml.Matrix3f().set(pose(p)).invert().transpose()
+                        .transform(new Vector3f(0, 0, 1)).normalize();
+                    check(normal.distance(new Vector3f(0, 0, 1)) < .00001,
+                        "zero rotation is a sheet parallel to the screen at " + kind + "/" + Arrays.toString(position));
                     var origin = mapping.project(new Calibration.Point(center.x / -center.z, -center.y / -center.z));
                     check(Math.abs(origin.x() - position[0]) < .0001 && Math.abs(origin.y() - position[1]) < .0001,
-                        "eye basis does not move model center");
+                        "flattening does not move model center");
                     check(Math.abs(pose(p).transformDirection(new Vector3f(1, 0, 0)).y) < .00001,
-                        "eye basis preserves upright screen reference");
+                        "flattening preserves upright screen reference");
                     nativeFixtures.add(p);
                     checkHits(state, mapping, 1);
                     var file = new MenuCache(output.resolve("view-facing-cache.json.gz"));
@@ -42,8 +42,8 @@ final class ViewFacingChecks {
                     var old = new Gson().toJsonTree(state).getAsJsonObject();
                     old.remove("compatibleProfiles");
                     var upgraded = new Gson().fromJson(old, MenuCache.State.class);
-                    check(upgraded.equals(state), "old cached author data derives identical eye and hit profiles");
-                    check(file.read().equals(state), "eye basis and native hit outlines persist on disk");
+                    check(upgraded.equals(state), "old cached author data derives identical sheet and hit profiles");
+                    check(file.read().equals(state), "sheet transforms and native hit outlines persist on disk");
                     check(state.enhancedProfiles().equals(upgraded.enhancedProfiles()),
                         "compatible upgrade leaves enhanced cache unchanged");
                 }
@@ -51,34 +51,33 @@ final class ViewFacingChecks {
                     var state = MenuCache.compile(pages(kind, 380, 45, true), List.of(mapping), step);
                     var p = state.prepared(mapping, "facing").getLast();
                     var original = state.profiles().get(mapping.key()).get("facing").getLast();
-                    // Independent yaw/pitch basis built from the original, displaced model center.
                     var center = pose(original).transformPosition(Transforms.center(original.visual()));
-                    var direction = new Vector3f(center).negate().normalize();
-                    var right = new Vector3f(0, 1, 0).cross(direction).normalize();
-                    var up = new Vector3f(direction).cross(right);
-                    double fit = p.sx() / p.depth() / (original.sx() / original.depth());
+                    // Authored XYZ kept, camera depth squashed: actual = fit * diag(1, 1, SQUASH) * authored.
+                    var flat = new org.joml.Matrix3f().scaling(1, 1, DisplayRenderer.SQUASH);
+                    var xAxis = pose(original).transformDirection(new Vector3f(1, 0, 0)).div((float) original.depth());
+                    var xActual = pose(p).transformDirection(new Vector3f(1, 0, 0)).div((float) p.depth());
+                    float fit = xActual.length() / flat.transform(new Vector3f(xAxis)).length();
                     for (int axis = 0; axis < 3; axis++) {
                         var unit = new Vector3f(axis == 0 ? 1 : 0, axis == 1 ? 1 : 0, axis == 2 ? 1 : 0);
                         var tangent = pose(original).transformDirection(new Vector3f(unit)).div((float) original.depth());
-                        var expected = new Vector3f(right).mul(tangent.x)
-                            .add(new Vector3f(up).mul(tangent.y)).add(new Vector3f(direction).mul(tangent.z));
+                        var expected = flat.transform(tangent).mul(fit);
                         var actual = pose(p).transformDirection(new Vector3f(unit)).div((float) p.depth());
-                        check(actual.distance(expected.mul((float) fit)) < .00001,
-                            "authored XYZ, nonuniform stretch and nested shear compose after eye basis");
+                        check(actual.distance(expected) < .00001,
+                            "authored XYZ, nonuniform stretch and nested shear compose before flattening");
                     }
                     var actualCenter = pose(p).transformPosition(Transforms.center(p.visual())).div((float) p.depth());
                     check(actualCenter.distance(center.div((float) original.depth())) < .00001,
-                        "nested group center remains unchanged by basis rotation");
+                        "nested group center remains unchanged by flattening");
                     check(state.prepared(mapping, "facing", RenderMode.ENHANCED)
                         .equals(DisplayRenderer.enhanced(state.profiles().get(mapping.key()).get("facing"), mapping)),
-                        "shader mode has no compatible eye basis");
+                        "shader mode is not flattened");
                     checkHits(state, mapping, step);
                     nativeFixtures.add(p);
                     var ordered = state.prepared(mapping, "facing");
                     for (int i = 0; i < ordered.size(); i++) {
                         var layer = ordered.get(i);
                         check(layer.depth() - layer.halfDepth() >= DisplayRenderer.NEAR_CLEARANCE - .000001,
-                            "complete eye-facing bounds clear near plane");
+                            "complete flattened bounds clear near plane");
                         if (i > 0)
                             check(ordered.get(i - 1).depth() - ordered.get(i - 1).halfDepth()
                                 > layer.depth() + layer.halfDepth(), "complete bounds stay in front of menu background");
@@ -86,7 +85,7 @@ final class ViewFacingChecks {
                 }
             }
         }
-        System.out.println("View-facing checks passed: " + checks + "; native fixtures=" + nativeFixtures.size());
+        System.out.println("Compatible sheet checks passed: " + checks + "; native fixtures=" + nativeFixtures.size());
         return nativeFixtures;
     }
 
@@ -144,11 +143,15 @@ final class ViewFacingChecks {
         for (var r : state.hit(mapping, "facing").regions())
             for (int y = r.box().y(); y < r.box().y() + r.box().height(); y++)
                 Arrays.fill(actual[y], r.box().x(), r.box().x() + r.box().width(), true);
+        // A flattened model's edges can land within float error of a cell border; either side is then correct.
+        double e = 1e-4;
         for (int y = 0; y < 180; y++) for (int x = 0; x < 452; x++) {
-            boolean expected = faces.intersects(x / step * step, y / step * step,
-                Math.min(step, 452 - x / step * step), Math.min(step, 180 - y / step * step));
-            if (actual[y][x] != expected)
-                throw new AssertionError("Eye-facing visible model and hit region differ at " + x + "," + y);
+            int cx = x / step * step, cy = y / step * step, w = Math.min(step, 452 - cx), h = Math.min(step, 180 - cy);
+            boolean inner = faces.intersects(cx + e, cy + e, w - 2 * e, h - 2 * e);
+            boolean outer = faces.intersects(cx - e, cy - e, w + 2 * e, h + 2 * e);
+            if (actual[y][x] != inner && actual[y][x] != outer)
+                throw new AssertionError("Flattened visible model and hit region differ at " + x + "," + y
+                    + " actual " + actual[y][x] + " faces " + faces.getBounds2D() + " step " + step + " " + p);
         }
         checks++;
     }

@@ -69,11 +69,12 @@ void main() {
 #endif
 
 #if !defined(EMISSIVE) && !defined(OIT_ALPHA_ONLY)
-    lightMapColor = sample_lightmap(Sampler2, UV2);
+    lightMapColor = sample_lightmap(Sampler2, menuDisplay ? ivec2(240) : UV2);
 #endif
 
 #if !defined(NO_OVERLAY) && !defined(OIT_ALPHA_ONLY)
     overlayColor = texelFetch(Sampler1, UV1, 0);
+    if (menuDisplay && luma_lit(UV2)) overlayColor = luma_menu_view(Position);
 #endif
 
     texCoord0 = UV0;

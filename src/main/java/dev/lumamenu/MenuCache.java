@@ -76,15 +76,15 @@ final class MenuCache {
             }
             hitProfiles = Collections.unmodifiableMap(hits);
             if (enhancedProfiles == null)
-                enhancedProfiles = prepareMode(pages, profiles, rotationHitStep, RenderMode.ENHANCED, false);
+                enhancedProfiles = prepareMode(pages, profiles, rotationHitStep, RenderMode.ENHANCED);
             enhancedProfiles = validateMode(pages, profiles.keySet(), enhancedProfiles);
             if (compatibleProfiles == null)
-                compatibleProfiles = prepareMode(pages, profiles, rotationHitStep, RenderMode.COMPATIBLE, false);
+                compatibleProfiles = prepareMode(pages, profiles, rotationHitStep, RenderMode.COMPATIBLE);
             compatibleProfiles = validateMode(pages, profiles.keySet(), compatibleProfiles);
-            // Additive: steered models for compatible look-down pages, derived from saved transforms only.
+            // Additive: look-down pages, derived from saved transforms only (same flattened models as level pages).
             var downPages = lookDownPages(pages);
             if (lookDownProfiles == null)
-                lookDownProfiles = prepareMode(downPages, profiles, rotationHitStep, RenderMode.COMPATIBLE, true);
+                lookDownProfiles = prepareMode(downPages, profiles, rotationHitStep, RenderMode.COMPATIBLE);
             lookDownProfiles = validateMode(downPages, profiles.keySet(), lookDownProfiles);
             Layouts.validateLinks(pages);
         }
@@ -158,13 +158,13 @@ final class MenuCache {
         hits.putAll(prepareHits(state.pages, Map.of(mapping.key(), next.get(mapping.key())), state.rotationHitStep));
         var enhanced = new LinkedHashMap<>(state.enhancedProfiles);
         enhanced.putAll(prepareMode(state.pages, Map.of(mapping.key(), next.get(mapping.key())),
-            state.rotationHitStep, RenderMode.ENHANCED, false));
+            state.rotationHitStep, RenderMode.ENHANCED));
         var compatible = new LinkedHashMap<>(state.compatibleProfiles);
         compatible.putAll(prepareMode(state.pages, Map.of(mapping.key(), next.get(mapping.key())),
-            state.rotationHitStep, RenderMode.COMPATIBLE, false));
+            state.rotationHitStep, RenderMode.COMPATIBLE));
         var down = new LinkedHashMap<>(state.lookDownProfiles);
         down.putAll(prepareMode(lookDownPages(state.pages), Map.of(mapping.key(), next.get(mapping.key())),
-            state.rotationHitStep, RenderMode.COMPATIBLE, true));
+            state.rotationHitStep, RenderMode.COMPATIBLE));
         return new State(FORMAT, state.pages, next, state.rotationHitStep, hits, enhanced, compatible, down);
     }
     private static Map<String, Layouts.Page> lookDownPages(Map<String, Layouts.Page> pages) {
@@ -173,8 +173,7 @@ final class MenuCache {
         return result;
     }
     private static Map<String, RenderProfile> prepareMode(Map<String, Layouts.Page> pages,
-            Map<String, Map<String, List<DisplayRenderer.Prepared>>> profiles, int step, RenderMode mode,
-            boolean down) {
+            Map<String, Map<String, List<DisplayRenderer.Prepared>>> profiles, int step, RenderMode mode) {
         var result = new LinkedHashMap<String, RenderProfile>();
         profiles.forEach((key, compatible) -> {
             String[] fields = key.split("/");
@@ -185,7 +184,7 @@ final class MenuCache {
             var hits = new LinkedHashMap<String, HitGeometry.Surface>();
             pages.forEach((id, page) -> {
                 var transforms = mode == RenderMode.ENHANCED ? DisplayRenderer.enhanced(compatible.get(id), mapping)
-                    : DisplayRenderer.compatible(compatible.get(id), mapping, down);
+                    : DisplayRenderer.compatible(compatible.get(id), mapping);
                 prepared.put(id, transforms);
                 hits.put(id, HitGeometry.compile(page, mapping, transforms, step, mode));
             });
@@ -239,11 +238,10 @@ final class MenuCache {
         return result;
     }
     /** One page's displays for a mode, exactly as the cached profiles build them (moved pages are built at runtime). */
-    static List<DisplayRenderer.Prepared> prepare(Layouts.Page page, Calibration.Mapping mapping, RenderMode mode,
-                                                  boolean down) {
+    static List<DisplayRenderer.Prepared> prepare(Layouts.Page page, Calibration.Mapping mapping, RenderMode mode) {
         var base = DisplayRenderer.prepare(page, mapping);
         return mode == RenderMode.ENHANCED ? DisplayRenderer.enhanced(base, mapping)
-            : DisplayRenderer.compatible(base, mapping, down);
+            : DisplayRenderer.compatible(base, mapping);
     }
     private static Map<String, List<DisplayRenderer.Prepared>> prepareProfile(Map<String, Layouts.Page> pages,
                                                                             Calibration.Mapping mapping) {

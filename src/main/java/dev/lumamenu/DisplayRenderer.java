@@ -2,6 +2,7 @@ package dev.lumamenu;
 
 import com.github.retrooper.packetevents.protocol.component.ComponentTypes;
 import com.github.retrooper.packetevents.protocol.component.builtin.item.ItemModel;
+import com.github.retrooper.packetevents.protocol.component.builtin.item.ItemProfile;
 import com.github.retrooper.packetevents.protocol.component.builtin.item.ItemCustomModelData;
 import com.github.retrooper.packetevents.protocol.color.Color;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
@@ -45,7 +46,7 @@ final class DisplayRenderer {
     static final double RIDER_ABOVE_EYE = (double) 1.8f - (double) 1.62f;
     /** Vanilla eye height of a scalable box ({@code EntityDimensions.defaultEyeHeight}): 0.85 of its height. */
     static final float EYE_RATIO = .85f;
-    /** Camera pitch of looked-down pages. */
+    /** Camera pitch of looked-down pages outside the Nether. */
     static final float DOWN = 90f;
     /** The viewer's current pose: passenger attachment height and eye height above the feet, scale included. */
     record Body(double height, double eye) {
@@ -148,21 +149,16 @@ final class DisplayRenderer {
         return new double[]{nx, ny, Math.min(nx, ny)};
     }
 
-    /** Model zero faces the eye ray; authored XYZ and parent shear remain relative to that basis. */
+    /** Models keep the enhanced orientation and are flattened parallel to the screen (see {@link #flatten}); tilted
+     *  fixed images are flattened too. */
     static List<Prepared> compatible(List<Prepared> authored, Calibration.Mapping mapping) {
-        return compatible(authored, mapping, false);
-    }
-
-    /** With {@code down} the models take the enhanced orientation and are flattened parallel to the screen
-     *  (see {@link #flatten}); otherwise model zero faces the eye ray. */
-    static List<Prepared> compatible(List<Prepared> authored, Calibration.Mapping mapping, boolean down) {
-        if (authored.stream().noneMatch(p -> model(p.visual))) return authored;
+        if (authored.stream().noneMatch(p -> model(p.visual) || tiltedImage(p))) return authored;
         List<Prepared> result = new ArrayList<>();
         double cursor = 1;
         for (Prepared original : authored) {
             Prepared p = original.scaled(1 / original.depth);
-            if (model(p.visual))
-                p = ModelFit.fit(down ? flatten(p) : facingEye(p), mapping, RenderMode.COMPATIBLE);
+            if (model(p.visual)) p = ModelFit.fit(flatten(p), mapping, RenderMode.COMPATIBLE);
+            else if (tiltedImage(p)) p = flatten(p);
             if (p.halfDepth >= .9)
                 throw new IllegalArgumentException(p.visual.id() + "：朝向玩家后的模型深度过大，请缩小或重新校准");
             double depth = cursor / (1 + p.halfDepth + .002);
@@ -177,40 +173,40 @@ final class DisplayRenderer {
         return v.kind().equals("item") || v.kind().equals("block");
     }
 
-    private static Prepared facingEye(Prepared p) {
-        var left = new Quaternionf(p.qx, p.qy, p.qz, p.qw);
-        var right = new Quaternionf(p.rqx, p.rqy, p.rqz, p.rqw);
-        var center = left.transform(right.transform(Transforms.center(p.visual)).mul(p.sx, p.sy, p.sz))
-            .add(p.tx, p.ty, p.tz);
-        double x = p.side + center.x, y = p.up + center.y, z = center.z - p.depth;
-        var basis = new Quaternionf().rotationY((float) Math.atan2(-x, -z))
-            .rotateX((float) Math.atan2(y, Math.hypot(x, z)));
-        left.premul(basis);
-        // Rotate around the actual model center, including any parent-group displacement.
-        var translation = new org.joml.Vector3f(center).sub(
-            left.transform(right.transform(Transforms.center(p.visual)).mul(p.sx, p.sy, p.sz)));
-        var half = Transforms.halfSize(p.visual);
-        double halfDepth = 0;
-        var localCenter = Transforms.center(p.visual);
-        for (int a : new int[]{-1, 1}) for (int b : new int[]{-1, 1}) for (int c : new int[]{-1, 1}) {
-            var corner = new org.joml.Vector3f(localCenter.x + a * half.x,
-                localCenter.y + b * half.y, localCenter.z + c * half.z);
-            left.transform(right.transform(corner).mul(p.sx, p.sy, p.sz)).add(translation);
-            halfDepth = Math.max(halfDepth, Math.abs(corner.z));
-        }
-        return new Prepared(p.visual, p.depth, p.side, p.up, p.sx, p.sy, p.sz,
-            translation.x, translation.y, translation.z, left.x, left.y, left.z, left.w,
-            p.lineWidth, halfDepth, p.rqx, p.rqy, p.rqz, p.rqw);
+    /** A fixed image whose plane is not parallel to the screen; variable images keep their axes for live rescaling. */
+    private static boolean tiltedImage(Prepared p) {
+        return p.visual.kind().equals("image") && !dynamicImage(p.visual) && !parallel(p);
+    }
+
+    /** The visual's local XY plane faces the camera (normal within about 2.5 degrees of camera Z). */
+    private static boolean parallel(Prepared p) {
+        var linear = new org.joml.Matrix3f().rotation(new Quaternionf(p.qx, p.qy, p.qz, p.qw))
+            .scale(p.sx, p.sy, p.sz).rotate(new Quaternionf(p.rqx, p.rqy, p.rqz, p.rqw));
+        var normal = linear.invert().transpose().transform(new org.joml.Vector3f(0, 0, 1)).normalize();
+        return Math.abs(normal.z) > .999f;
+    }
+
+    /** Enhanced-mode models in the inventory pose take the inventory's face lighting from the menu shader. */
+    static boolean lit(Layouts.Visual v) {
+        return model(v) && v.inventoryPose();
+    }
+
+    /** Brightness overrides (sky 15); block 14 marks {@link #lit} enhanced models for menu.glsl {@code LUMA_LIT_LIGHT}. */
+    static final int LIT_LIGHT = (14 << 4) | (15 << 20), FULL_LIGHT = (15 << 4) | (15 << 20);
+
+    /** Compatible mode never relies on the pack's shaders (shader packs replace them): full brightness only. */
+    static int brightness(Prepared p, RenderMode mode) {
+        return mode == RenderMode.ENHANCED && lit(p.visual) ? LIT_LIGHT : FULL_LIGHT;
     }
 
     /** Depth that remains of a flattened model; thin enough that every visible face takes the sheet normal. */
     static final float SQUASH = .005f;
 
     /**
-     * Looked-down compatible pages only. Keeps the authored (enhanced) orientation and squashes camera-space Z
-     * around the model center, so the model becomes a sheet parallel to the screen. Under perspective such a sheet
-     * projects exactly like the enhanced orthographic image (no off-axis widening), and with the camera straight down
-     * its normal, the inverse transpose of this matrix, is world up: every visible face is fully lit at any yaw.
+     * Keeps the authored (enhanced) orientation and squashes camera-space Z around the model center, so the model
+     * becomes a sheet parallel to the screen. Under perspective such a sheet projects exactly like the enhanced
+     * orthographic image (no off-axis widening) at any pitch, and every face takes the sheet normal, so the level light
+     * of a {@link Look} for looked-down pages lights all of them fully without any shader.
      */
     static Prepared flatten(Prepared p) {
         var left = new Quaternionf(p.qx, p.qy, p.qz, p.qw);
@@ -308,6 +304,35 @@ final class DisplayRenderer {
     /** A {@code plane}: a single zero-advance character, so the TextDisplay background is exactly 1x10 text pixels. */
     private static final Component PANEL = HitSurface.space(0);
 
+    static final int MAX_TINTS = 1024;
+    private static final java.util.regex.Pattern TINT = java.util.regex.Pattern.compile("#?([0-9A-Fa-f]{6})");
+    /** {@code #RRGGBB} (or bare {@code RRGGBB}) values separated by commas or spaces; null if any is invalid. */
+    static List<Color> tints(String text) {
+        String trimmed = text.strip();
+        if (trimmed.isEmpty()) return List.of();
+        String[] parts = trimmed.split("[,\\s]+");
+        if (parts.length > MAX_TINTS) return null;
+        List<Color> colors = new ArrayList<>(parts.length);
+        for (String part : parts) {
+            var match = TINT.matcher(part);
+            if (!match.matches()) return null;
+            colors.add(new Color(Integer.parseInt(match.group(1), 16)));
+        }
+        return colors;
+    }
+    /** An item visual's tints now: its {@code tints} template expanded; an invalid list tints nothing. */
+    private static List<Color> tints(Layouts.Visual v, UnaryOperator<String> variables) {
+        if (v.colorSource().isEmpty()) return List.of();
+        List<Color> colors = tints(variables.apply(v.colorSource()));
+        return colors == null ? List.of() : colors;
+    }
+    private static ItemStack tinted(ItemStack stack, List<Color> colors) {
+        if (colors.isEmpty() || stack.isEmpty()) return stack;
+        stack.setComponent(ComponentTypes.CUSTOM_MODEL_DATA_LISTS,
+            new ItemCustomModelData(List.of(), List.of(), List.of(), colors));
+        return stack;
+    }
+
     /** Text, planes and CraftEngine glyphs are TextDisplays: only their lightmap shades them, never view direction. */
     static boolean textDisplay(Layouts.Visual v) {
         return v.kind().equals("text") || v.kind().equals("plane") || v.kind().equals("glyph");
@@ -315,12 +340,42 @@ final class DisplayRenderer {
     static boolean dynamicImage(Layouts.Visual v) { return v.kind().equals("image") && !v.source().isEmpty(); }
     /** Grid icons: an item model named by a variable. */
     static boolean dynamicItem(Layouts.Visual v) { return v.kind().equals("item") && v.itemModel().contains("{"); }
+    /** Player heads whose owner (an item visual's content, from {@code profile}) is a variable. */
+    static boolean dynamicHead(Layouts.Visual v) { return v.kind().equals("item") && v.content().contains("{"); }
+    /** Resolves a head owner to its profile component; replaceable by checks that run without a server. */
+    static java.util.function.Function<String, ItemProfile> heads = DisplayRenderer::headProfile;
+    /**
+     * An online player's own profile with its skin properties; otherwise a partial profile (name or UUID only) that
+     * the 26.3 client resolves itself. Null for blank or invalid owners, which shows the default head.
+     */
+    static ItemProfile headProfile(String owner) {
+        String value = owner.strip();
+        if (value.isEmpty()) return null;
+        UUID id = null;
+        try { id = UUID.fromString(value); } catch (IllegalArgumentException notUuid) {
+            if (!value.matches("[A-Za-z0-9_.]{1,16}")) return null;
+        }
+        Player online = org.bukkit.Bukkit.getServer() == null ? null
+            : id != null ? org.bukkit.Bukkit.getPlayer(id) : org.bukkit.Bukkit.getPlayerExact(value);
+        if (online != null) {
+            List<ItemProfile.Property> properties = new ArrayList<>();
+            for (var property : online.getPlayerProfile().getProperties())
+                properties.add(new ItemProfile.Property(property.getName(), property.getValue(), property.getSignature()));
+            String name = online.getName();
+            if (properties.stream().anyMatch(p -> p.getName().equals("textures")) && name.length() <= 16)
+                return new ItemProfile(name, online.getUniqueId(), properties);
+            return name.length() <= 16 ? new ItemProfile(name, null, List.of())
+                : new ItemProfile(null, online.getUniqueId(), List.of());
+        }
+        return id != null ? new ItemProfile(null, id, List.of()) : new ItemProfile(value, null, List.of());
+    }
     /** The expanded value whose change needs new metadata, or null for visuals that never change. */
     private static String changing(Layouts.Visual v, UnaryOperator<String> variables) {
         String value = null;
         if (v.kind().equals("text")) value = variables.apply(v.content());
         else if (dynamicImage(v)) value = variables.apply(v.source());
         else if (dynamicItem(v)) value = variables.apply(v.itemModel());
+        else if (dynamicHead(v)) value = variables.apply(v.content());
         if (v.colorSource().isEmpty() && v.fillSource().isEmpty()) return value;
         return (value == null ? "" : value) + '\u0000' + variables.apply(v.colorSource())
             + '\u0000' + variables.apply(v.fillSource());
@@ -380,7 +435,8 @@ final class DisplayRenderer {
             if (!Double.isFinite(pose.height) || !Double.isFinite(pose.eye) || pose.height <= 0 || pose.eye <= 0)
                 pose = Body.standing(1);
             var eye = player.getEyeLocation();
-            var anchor = Camera.of(eye, down).offset(pose.riderAboveEye());
+            var look = Look.of(eye, down);
+            var anchor = Camera.of(look).offset(pose.riderAboveEye());
             view.anchor = anchor;
             var spawn = new Location(eye.getX(), eye.getY() + pose.riderAboveEye(), eye.getZ(), 0, 0);
             for (int i = 0; i < prepared.size(); i++) {
@@ -397,8 +453,7 @@ final class DisplayRenderer {
                 } else view.texts[i] = changing(p.visual, variables);
                 send(player, new WrapperPlayServerEntityMetadata(id, data));
             }
-            var feet = new Location(eye.getX(), eye.getY() - pose.eye, eye.getZ(), eye.getYaw(),
-                down ? DOWN : sentPitch(eye.getPitch()));
+            var feet = new Location(eye.getX(), eye.getY() - pose.eye, eye.getZ(), look.yaw(), look.pitch());
             send(player, new WrapperPlayServerSpawnEntity(view.foot, UUID.randomUUID(), EntityTypes.INTERACTION, spawn, 0, 0, new Vector3d(0, 0, 0)));
             send(player, new WrapperPlayServerEntityMetadata(view.foot, interaction((float) -pose.height)));
             send(player, new WrapperPlayServerSpawnEntity(view.camera, UUID.randomUUID(), EntityTypes.INTERACTION, feet, 0, 0, new Vector3d(0, 0, 0)));
@@ -495,7 +550,8 @@ final class DisplayRenderer {
                 view.texts[i] = changing(p.visual, variables);
                 continue;
             }
-            if (dynamicItem(p.visual) || !p.visual.colorSource().isEmpty() || !p.visual.fillSource().isEmpty()) {
+            if (dynamicItem(p.visual) || dynamicHead(p.visual) || !p.visual.colorSource().isEmpty()
+                || !p.visual.fillSource().isEmpty()) {
                 String value = changing(p.visual, variables);
                 if (value.equals(view.texts[i])) continue;
                 send(player, new WrapperPlayServerEntityMetadata(view.ids[i],
@@ -610,7 +666,7 @@ final class DisplayRenderer {
                 : new Vector3f((float) (p.sx * scale * Math.max(share, 1e-4)), p.sy * scale, p.sz * scale)),
             new EntityData<>(13, EntityDataTypes.QUATERNION, new Quaternion4f(p.qx, p.qy, p.qz, p.qw)),
             new EntityData<>(15, EntityDataTypes.BYTE, (byte) 3),
-            new EntityData<>(16, EntityDataTypes.INT, (15 << 4) | (15 << 20)),
+            new EntityData<>(16, EntityDataTypes.INT, brightness(p, mode)),
             new EntityData<>(18, EntityDataTypes.FLOAT, 0f),
             new EntityData<>(20, EntityDataTypes.FLOAT, 0f),
             new EntityData<>(21, EntityDataTypes.FLOAT, 0f)));
@@ -655,8 +711,12 @@ final class DisplayRenderer {
                     var stack = ItemStack.builder().type(ItemTypes.getByName(v.source())).amount(1);
                     if (!v.itemModel().isEmpty())
                         stack.component(ComponentTypes.ITEM_MODEL, new ItemModel(new ResourceLocation(v.itemModel())));
+                    ItemProfile profile = v.kind().equals("item") && !v.content().isEmpty()
+                        ? heads.apply(variables.apply(v.content())) : null;
+                    if (profile != null) stack.component(ComponentTypes.PROFILE, profile);
                     item = stack.build();
                 }
+                if (v.kind().equals("item")) item = tinted(item, tints(v, variables));
                 data.add(new EntityData<>(23, EntityDataTypes.ITEMSTACK, item));
                 data.add(new EntityData<>(24, EntityDataTypes.BYTE, v.inventoryPose() ? GUI_CONTEXT : NONE_CONTEXT));
             }
@@ -723,10 +783,26 @@ final class DisplayRenderer {
         return (float) (packed * 360) / 256.0f;
     }
 
+    /**
+     * Direction of the camera rig. Looked-down pages turn it so the screen-parallel sheets face the level light: straight
+     * down where both 26.3 level lights come from above; in the Nether, whose two lights are opposite
+     * ({@code Lighting.NETHER_DIFFUSE_LIGHT_0/1}), along the first one, the only full-brightness direction. Angles are
+     * multiples of the spawn packet's 1/256 turn. The player's own view is never touched.
+     */
+    record Look(float yaw, float pitch) {
+        static final Look NETHER = new Look(11 * 360 / 256f, 38 * 360 / 256f);
+        static Look of(org.bukkit.Location eye, boolean down) {
+            if (!down) return new Look(eye.getYaw(), sentPitch(eye.getPitch()));
+            var world = eye.getWorld();
+            if (world != null && world.getEnvironment() == org.bukkit.World.Environment.NETHER) return NETHER;
+            return new Look(eye.getYaw(), DOWN);
+        }
+    }
+
     record Camera(double sp, double cp) {
-        /** Looked-down pages point the camera rig straight down; the player's own view is never touched. */
-        static Camera of(org.bukkit.Location eye, boolean down) {
-            double pitch = Math.toRadians(down ? DOWN : sentPitch(eye.getPitch()));
+        static Camera of(org.bukkit.Location eye, boolean down) { return of(Look.of(eye, down)); }
+        static Camera of(Look look) {
+            double pitch = Math.toRadians(look.pitch());
             return new Camera(Math.sin(pitch), Math.cos(pitch));
         }
         /** Passenger point {@code above} the eye, in the camera-centered billboard frame (right, up, toward the eye). */

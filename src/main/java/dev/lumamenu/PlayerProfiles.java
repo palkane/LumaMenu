@@ -134,7 +134,7 @@ final class PlayerProfiles {
     }
 
     private Entry build(Layouts.Page page, Calibration.Mapping mapping, Key key) {
-        var prepared = MenuCache.prepare(page, mapping, key.mode(), key.down());
+        var prepared = MenuCache.prepare(page, mapping, key.mode());
         return new Entry(prepared, HitGeometry.compile(page, mapping, prepared, step, key.mode()));
     }
 }

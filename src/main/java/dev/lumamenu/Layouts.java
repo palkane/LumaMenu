@@ -27,7 +27,7 @@ final class Layouts {
         "width", "height", "size", "thickness", "color", "content", "source", "item-model",
         "rotation", "stretch", "bounds", "actions", "tooltip", "permission", "clickable", "style", "step",
         "alignment", "line-width", "max-lines", "opacity", "tintable", "reuse-texture", "atlas", "visible-if",
-        "header", "selected", "variant", "icon", "icon-size", "value");
+        "header", "selected", "variant", "icon", "icon-size", "value", "profile", "tints");
     /** Node types drawn from the file's theme ({@link Themes}); a {@code button} joins them with {@code style: theme}. */
     static final Set<String> THEMED = Set.of("panel", "card", "tab", "badge", "bar");
     /** {@code plane}: TextDisplay background; {@code image}: flat item model; {@code glyph}: CraftEngine font image. */
@@ -67,8 +67,8 @@ final class Layouts {
         Collection { saved = saved == null ? List.of() : List.copyOf(saved); }
     }
     /**
-     * DialogMenu {@code forms}, asked in chat one field after another (like ArcMenu's chat catcher); {@code submit}
-     * and {@code cancel} only label the prompt. Texts may hold variables, expanded when the form opens.
+     * DialogMenu {@code forms}, shown as one native input Dialog ({@link MenuEngine.Input} sizes each box from its
+     * limit); {@code submit} and {@code cancel} label its two buttons. Texts may hold variables, expanded when it opens.
      */
     record Form(String title, String submit, String cancel, List<Field> fields) {
         Form {
@@ -84,7 +84,8 @@ final class Layouts {
             Objects.requireNonNull(key);
             Objects.requireNonNull(label);
             Objects.requireNonNull(initial);
-            if (maxLength < 1 || maxLength > 128) throw new IllegalArgumentException("max-length须为1..128");
+            if (maxLength < 1 || maxLength > MenuEngine.MAX_INPUT)
+                throw new IllegalArgumentException("max-length须为1.." + MenuEngine.MAX_INPUT);
         }
     }
     /** A grid of entry slots; {@code items} is a fixed list, otherwise the collection's current list is shown. */
@@ -339,7 +340,7 @@ final class Layouts {
         }
         String message(String key) { return messages.getOrDefault(key, key); }
         /**
-         * DialogMenu {@code close-with-escape}: Esc may close the corner-× Dialog (noticed by the player turning).
+         * DialogMenu {@code close-with-escape}: Esc may close the corner-× Dialog (noticed when a movement key is next pressed).
          * Unset on the page and its layout file: the server's {@code close-with-escape} setting.
          */
         boolean closeWithEscape(boolean fallback) { return escape == null ? fallback : escape; }
@@ -468,6 +469,28 @@ final class Layouts {
         }
         return result;
     }
+    /**
+     * One page of a layout text compiled as reload would, for the web editor: the file's own theme when it names one,
+     * else {@code theme} (null: the default). Theme copies of other pages are not built.
+     */
+    static Page preview(String expected, ConfigurationSection root, ImageCatalog catalog, String theme, String pageId) {
+        keys(root, ROOT);
+        String id = root.getString("id", expected);
+        checkId(id);
+        if (!expected.equals(id)) throw new IllegalArgumentException("id必须与文件名一致");
+        int schema = integer(root, "schema-version", 1, 1, 3);
+        if (root.contains("theme") && !root.isString("theme")) throw new IllegalArgumentException("theme须为主题名");
+        Template template = template(root);
+        ImageCatalog themed = catalog.themed(root.contains("theme") ? root.getString("theme") : theme);
+        ConfigurationSection family = section(root, "pages", false);
+        if (family == null) return page(id, root, root, schema, id, themed, template);
+        if (root.contains("frontend")) throw new IllegalArgumentException("pages与顶层frontend不能混用");
+        checkId(pageId);
+        ConfigurationSection source = section(family, pageId, true);
+        keys(source, PAGE);
+        return page(pageId, source, root, schema, id, themed, template);
+    }
+
     /** The file's pages compiled with {@code catalog}'s theme; a non-empty {@code theme} suffixes their IDs. */
     private static Map<String, Page> pages(String id, ConfigurationSection root, int schema, ImageCatalog catalog,
                                            Template template, String theme) {
@@ -579,7 +602,7 @@ final class Layouts {
                 ConfigurationSection field = section(fieldSection, key, true);
                 keys(field, Set.of("label", "initial", "max-length"));
                 fields.add(new Field(key, field.getString("label", key), field.getString("initial", ""),
-                    integer(field, "max-length", 64, 1, 128)));
+                    integer(field, "max-length", 64, 1, MenuEngine.MAX_INPUT)));
             }
             try {
                 forms.put(formId, new Form(form.getString("title", ""), form.getString("submit", "提交"),
@@ -603,6 +626,10 @@ final class Layouts {
         }
         for (Grid grid : grids) { texts.add(grid.emptyLabel()); texts.add(grid.unknownLabel()); texts.addAll(grid.emptyActions()); }
         for (Collection collection : template.collections().values()) texts.addAll(collection.saved());
+        for (Form form : template.forms().values()) {
+            texts.add(form.title()); texts.add(form.submit()); texts.add(form.cancel());
+            for (Field field : form.fields()) { texts.add(field.label()); texts.add(field.initial()); }
+        }
         for (Move move : moves) { texts.add(move.x()); texts.add(move.y()); }
         for (Visual v : visuals) {
             texts.add(v.content()); texts.add(v.source()); texts.add(v.itemModel()); texts.add(v.colorSource());
@@ -1029,6 +1056,16 @@ final class Layouts {
             boolean dynamicModel = itemModel.indexOf('{') >= 0;
             if (!itemModel.isEmpty() && bounds == null && modelSource == null && !dynamicModel)
                 throw new IllegalArgumentException(id + "：自定义item-model需要bounds声明完整模型边界");
+            // A player head's owner (name or UUID, variables allowed); item visuals keep it in their unused content.
+            String profile = node.getString("profile", "");
+            if (!profile.isEmpty() && (!type.equals("item") || !source.equals("minecraft:player_head") || !itemModel.isEmpty()))
+                throw new IllegalArgumentException(id + "：profile仅用于source为minecraft:player_head的item/model");
+            // Item model tints (custom_model_data colors, in order); item visuals keep the template in colorSource.
+            String tints = node.getString("tints", "");
+            if (!tints.isEmpty() && !type.equals("item"))
+                throw new IllegalArgumentException(id + "：tints仅用于item/model");
+            if (!tints.isEmpty() && tints.indexOf('{') < 0 && DisplayRenderer.tints(tints) == null)
+                throw new IllegalArgumentException(id + "：tints须为以逗号或空格分隔的#RRGGBB，最多" + DisplayRenderer.MAX_TINTS + "个");
             switch (type) {
                 case "rectangle", "line" -> visuals.add(tinted.apply(visual(id, "plane", x, y, z, width, height, size,
                     color, "", "", "", 0, 0, 0, 1, 1, 1)));
@@ -1188,8 +1225,9 @@ final class Layouts {
                     if (source.isEmpty()) throw new IllegalArgumentException(id + "：需要source");
                     DisplayRenderer.validateSource(type, source, dynamicModel ? "" : itemModel);
                     Visual item = visual(id, type, x, y, z, width, height, size, color,
-                        "", source, itemModel, stretchedModel ? 0 : rx, stretchedModel ? 0 : ry,
+                        profile, source, itemModel, stretchedModel ? 0 : rx, stretchedModel ? 0 : ry,
                         stretchedModel ? 0 : rz, bx, by, bz);
+                    if (!tints.isEmpty()) item = item.colored(tints);
                     visuals.add(rotation == null ? item.inInventoryPose() : item);
                 }
                 default -> throw new IllegalArgumentException(id + "：不支持type " + type);

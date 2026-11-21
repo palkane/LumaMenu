@@ -14,15 +14,20 @@ final class MenuResources {
     /** Half-opaque white; the hit area's text color tints it, and menu visuals stay visible behind it. */
     static final int DEBUG_ARGB = 0x8CFFFFFF;
     static void write(Path pack, boolean hideWarning) throws IOException {
-        write(pack, hideWarning, ImageCatalog.EMPTY, List.of());
+        write(pack, hideWarning, false, ImageCatalog.EMPTY, List.of());
     }
-    /** {@code usedModels}: item models the compiled pages reference, so vanilla image models are only written when used. */
-    static void write(Path pack, boolean hideWarning, ImageCatalog images, Collection<String> usedModels) throws IOException {
+    /**
+     * {@code usedModels}: item models the compiled pages reference, so vanilla image models are only written when used.
+     * {@code replaceCrosshair}: see {@link #crosshairFont}.
+     */
+    static void write(Path pack, boolean hideWarning, boolean replaceCrosshair, ImageCatalog images,
+                      Collection<String> usedModels) throws IOException {
         images.write(pack, usedModels);
-        for (String shader : List.of("minecraft/shaders/core/item.vsh", "minecraft/shaders/core/entity.vsh",
+        for (String shader : List.of("minecraft/shaders/core/item.vsh", "minecraft/shaders/core/item.fsh",
+                "minecraft/shaders/core/entity.vsh", "minecraft/shaders/core/entity.fsh",
                 "minecraft/shaders/core/glint.vsh",
                 "minecraft/shaders/core/text.vsh", "minecraft/shaders/core/position_color.vsh",
-                "lumamenu/shaders/include/menu.glsl")) {
+                "lumamenu/shaders/include/menu.glsl", "lumamenu/shaders/include/menu_light.glsl")) {
             String name = "assets/" + shader;
             try (var input = MenuResources.class.getResourceAsStream("/resourcepack/" + name)) {
                 if (input == null) throw new IOException("缺少菜单shader：" + name);
@@ -86,6 +91,7 @@ final class MenuResources {
         json(pack, "assets/lumamenu/font/chrome.json", Map.of("providers",
             List.of(Map.of("type", "bitmap", "file", "lumamenu:generated/close.png",
                 "height", 9, "ascent", 1, "chars", List.of(HitSurface.CROSS)))));
+        crosshairFont(pack, replaceCrosshair);
         if (hideWarning)
             for (String state : List.of("", "_disabled", "_highlighted"))
                 png(pack, "assets/minecraft/textures/gui/sprites/dialog/warning_button" + state + ".png",
@@ -129,17 +135,66 @@ final class MenuResources {
             new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB));
     }
 
+    /** Crosshair glyph colour: light grey at 85% (text cannot invert the background like the vanilla sprite). */
+    static final int CROSSHAIR_ARGB = 0xD9EBEBEB;
+    /** The vanilla 9x9 plus at (3, 3) of a 15x15 sprite. */
+    static BufferedImage crosshair() {
+        BufferedImage image = new BufferedImage(15, 15, BufferedImage.TYPE_INT_ARGB);
+        for (int i = 3; i <= 11; i++) {
+            image.setRGB(i, 7, CROSSHAIR_ARGB);
+            image.setRGB(7, i, CROSSHAIR_ARGB);
+        }
+        return image;
+    }
+
+    /**
+     * {@code replace}: the vanilla crosshair sprite becomes transparent and {@code lumamenu:crosshair} is the visible
+     * glyph, which a HUD plugin keeps in the action bar; the text shader centres it and the menu cuts it out while
+     * open. Otherwise both characters are zero-width spaces and the vanilla crosshair is untouched.
+     */
+    private static void crosshairFont(Path pack, boolean replace) throws IOException {
+        String glyphChar = ClientHud.CROSSHAIR.substring(0, 1), back = ClientHud.CROSSHAIR.substring(1);
+        if (!replace) {
+            json(pack, "assets/lumamenu/font/crosshair.json", Map.of("providers", List.of(Map.of("type", "space",
+                "advances", Map.of(glyphChar, 0, back, 0)))));
+            return;
+        }
+        BufferedImage glyph = crosshair();
+        png(pack, "assets/lumamenu/textures/crosshair/glyph.png", glyph);
+        json(pack, "assets/lumamenu/font/crosshair.json", Map.of("providers", List.of(
+            Map.of("type", "bitmap", "file", "lumamenu:crosshair/glyph.png", "height", 15, "ascent", 11,
+                "chars", List.of(glyphChar)),
+            Map.of("type", "space", "advances", Map.of(back, -advance(glyph))))));
+        png(pack, "assets/minecraft/textures/gui/sprites/hud/crosshair.png", new BufferedImage(15, 15, BufferedImage.TYPE_INT_ARGB));
+    }
+
+    /** A 26.3 bitmap glyph at scale 1 advances past its rightmost visible column plus one. */
+    static int advance(BufferedImage glyph) {
+        for (int x = glyph.getWidth() - 1; x >= 0; x--)
+            for (int y = 0; y < glyph.getHeight(); y++)
+                if (glyph.getRGB(x, y) >>> 24 != 0) return x + 2;
+        return 1;
+    }
+
     static Path export(Path directory, boolean hideWarning) throws IOException {
-        return export(directory, hideWarning, ImageCatalog.EMPTY, List.of());
+        return export(directory, hideWarning, false, ImageCatalog.EMPTY, List.of());
     }
     static Path export(Path directory, boolean hideWarning, ImageCatalog images, Collection<String> usedModels)
             throws IOException {
+        return export(directory, hideWarning, false, images, usedModels);
+    }
+    static Path export(Path directory, boolean hideWarning, boolean replaceCrosshair, ImageCatalog images,
+                       Collection<String> usedModels) throws IOException {
+        return zip(directory, "lumamenu-26.3.zip", staging -> write(staging, hideWarning, replaceCrosshair, images, usedModels));
+    }
+    private interface Writer { void write(Path staging) throws IOException; }
+    private static Path zip(Path directory, String name, Writer writer) throws IOException {
         Files.createDirectories(directory);
         Path staging = Files.createTempDirectory(directory, "pack-");
         Path temp = Files.createTempFile(directory, "pack-", ".tmp");
-        Path result = directory.resolve("lumamenu-26.3.zip");
+        Path result = directory.resolve(name);
         try {
-            write(staging, hideWarning, images, usedModels);
+            writer.write(staging);
             try (var zip = new ZipOutputStream(Files.newOutputStream(temp)); var paths = Files.walk(staging)) {
                 for (Path path : paths.filter(Files::isRegularFile).sorted().toList()) {
                     ZipEntry entry = new ZipEntry(staging.relativize(path).toString().replace('\\', '/'));

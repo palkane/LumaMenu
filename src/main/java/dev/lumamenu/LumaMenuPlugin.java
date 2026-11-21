@@ -6,9 +6,12 @@ import com.github.retrooper.packetevents.event.PacketListenerPriority;
 import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetSlot;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerWindowItems;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerActionBar;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage;
 import io.papermc.paper.connection.PlayerGameConnection;
 import io.papermc.paper.dialog.Dialog;
 import io.papermc.paper.event.player.PlayerCustomClickEvent;
@@ -46,8 +49,10 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     private PacketListenerAbstract dialogMonitor;
     private PacketListenerAbstract inventoryGuard;
     private PacketListenerAbstract riderGuard;
+    private PacketListenerAbstract hudGuard;
     private Path layouts;
     private ClientInventory inventory;
+    private ClientHud hud;
     private DisplayRenderer renderer;
     private final OwnDialogs ownDialogs = new OwnDialogs();
     private Settings settings;
@@ -56,7 +61,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     private final Set<UUID> joinPrompted = new HashSet<>();
 
     record Settings(boolean cornerClose, boolean hideWarning, int rotationHitStep, boolean calibrateOnJoin,
-                    boolean closeWithEscape) {}
+                    boolean closeWithEscape, boolean hideExperienceBar, boolean replaceCrosshair, int calibrationClicks) {}
 
     @Override public void onEnable() {
         try {
@@ -70,7 +75,8 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             settings = readSettings(getConfig());
             layouts = data.resolve("layouts");
             Files.createDirectories(layouts);
-            for (String name : List.of("showcase.yml", "demo.yml", "coordinates.yml", "transforms.yml", "features.yml"))
+            for (String name : List.of("showcase.yml", "demo.yml", "coordinates.yml", "transforms.yml", "features.yml",
+                    "calibration-check.yml"))
                 if (!Files.exists(layouts.resolve(name))) saveResource("layouts/" + name, false);
             if (!Files.exists(data.resolve("themes.yml"))) saveResource("themes.yml", false);
             Calibration.Store calibration = new Calibration.Store(data.resolve("calibration.properties"));
@@ -93,6 +99,8 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
             inventory = new ClientInventory((player, packet) ->
                 PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
+            hud = new ClientHud((player, packet) ->
+                PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet));
             engine = new MenuEngine(this, new Platform(), renderer, calibration, cache, state,
                 new RenderPreferences(data.resolve("render-modes.properties")));
             engine.themes(Themes.load(data.resolve("themes.yml")), new ThemeChoices(data.resolve("player-themes.properties")));
@@ -101,9 +109,11 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             Objects.requireNonNull(getCommand("lumamenu")).setExecutor(this);
             Objects.requireNonNull(getCommand("lumamenu")).setTabCompleter(this);
             Bukkit.getServicesManager().register(LumaMenuApi.class, engine, this, ServicePriority.Normal);
+            Bukkit.getServicesManager().register(LumaMenuEditing.class, editorBridge(), this, ServicePriority.Normal);
             registerDialogMonitor();
             registerInventoryGuard();
             registerRiderGuard(renderer);
+            registerHudGuard();
             Bukkit.getScheduler().runTaskTimer(this, engine::tick, 1, 1);
             Bukkit.getOnlinePlayers().forEach(engine::warm);
             getLogger().info("LumaMenu ready; Paper/Leaf26.3 protocol777. Merge pack: " + pack);
@@ -118,7 +128,39 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         ImageCatalog images = ImageCatalog.scan(Layouts.images(layouts));
         renderer.images(images);
         return MenuResources.export(getDataFolder().toPath().resolve("resourcepack"), settings.hideWarning(),
-            images, engine.imageModels(images));
+            settings.replaceCrosshair(), images, engine.imageModels(images));
+    }
+
+    /** {@code /lumamenu reload [file]}: one layout file, or (null) every layout, the themes and config.yml. */
+    private String reload(String file) throws Exception {
+        long start = System.nanoTime();
+        if (file != null) {
+            engine.reloadFile(layouts, file);
+            Bukkit.getOnlinePlayers().forEach(engine::warm);
+            exportPack();
+            return "已重读 " + file + ".yml，共 " + engine.pages().size()
+                + " 页，其他布局沿用已编译版本，" + (System.nanoTime() - start) / 1_000_000 + "ms";
+        }
+        var candidate = new org.bukkit.configuration.file.YamlConfiguration();
+        candidate.load(getDataFolder().toPath().resolve("config.yml").toFile());
+        Settings next = readSettings(candidate);
+        engine.reload(layouts, next.rotationHitStep());
+        Bukkit.getOnlinePlayers().forEach(engine::warm);
+        settings = next;
+        exportPack();
+        return "已编译并保存 " + engine.pages().size() + " 页 / "
+            + engine.profileCount() + " 名在线玩家缓存后台重建，rotation-hit-step=" + engine.rotationHitStep()
+            + "，" + (System.nanoTime() - start) / 1_000_000 + "ms";
+    }
+
+    private EditorBridge editorBridge() {
+        return new EditorBridge(this, getDataFolder().toPath(), new EditorBridge.Host() {
+            public Map<String, Layouts.Page> pages() { return engine.compiledPages(); }
+            public String reload(String file) throws Exception { return LumaMenuPlugin.this.reload(file); }
+            public boolean cornerClose() { return settings.cornerClose(); }
+            public boolean closeWithEscape() { return settings.closeWithEscape(); }
+            public String server() { return engine.server(); }
+        });
     }
 
     /** The menu API for scripts that reach plugins by name (also registered with the ServicesManager); null before startup. */
@@ -132,6 +174,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         if (dialogMonitor != null) PacketEvents.getAPI().getEventManager().unregisterListener(dialogMonitor);
         if (inventoryGuard != null) PacketEvents.getAPI().getEventManager().unregisterListener(inventoryGuard);
         if (riderGuard != null) PacketEvents.getAPI().getEventManager().unregisterListener(riderGuard);
+        if (hudGuard != null) PacketEvents.getAPI().getEventManager().unregisterListener(hudGuard);
         Bukkit.getServicesManager().unregisterAll(this);
         if (cache != null) {
             try { cache.close(60); }
@@ -148,27 +191,8 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 if (!sender.hasPermission("lumamenu.admin")) throw new IllegalStateException("没有管理权限");
                 switch (sub) {
                     case "reload" -> {
-                        long start = System.nanoTime();
                         if (args.length > 2) throw new IllegalArgumentException("/lumamenu reload [布局文件名]");
-                        if (args.length == 2) {
-                            String file = args[1].replaceFirst("\\.yml$", "");
-                            engine.reloadFile(layouts, file);
-                            Bukkit.getOnlinePlayers().forEach(engine::warm);
-                            exportPack();
-                            sender.sendMessage("LumaMenu：已重读 " + file + ".yml，共 " + engine.pages().size()
-                                + " 页，其他布局沿用已编译版本，" + (System.nanoTime() - start) / 1_000_000 + "ms");
-                            return true;
-                        }
-                        var candidate = new org.bukkit.configuration.file.YamlConfiguration();
-                        candidate.load(getDataFolder().toPath().resolve("config.yml").toFile());
-                        Settings next = readSettings(candidate);
-                        engine.reload(layouts, next.rotationHitStep());
-                        Bukkit.getOnlinePlayers().forEach(engine::warm);
-                        settings = next;
-                        exportPack();
-                        sender.sendMessage("LumaMenu：已编译并保存 " + engine.pages().size() + " 页 / "
-                            + engine.profileCount() + " 名在线玩家缓存后台重建，rotation-hit-step=" + engine.rotationHitStep()
-                            + "，" + (System.nanoTime() - start) / 1_000_000 + "ms");
+                        sender.sendMessage("LumaMenu：" + reload(args.length == 2 ? args[1].replaceFirst("\\.yml$", "") : null));
                     }
                     case "status" -> sender.sendMessage("LumaMenu " + getPluginMeta().getVersion()
                         + " pages=" + engine.pages().size() + " profiles=" + engine.profileCount()
@@ -189,6 +213,16 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 case "open" -> engine.demo(player, args.length > 1 ? args[1] : "showcase");
                 case "calibrate", "align" -> engine.calibrate(player);
                 case "close" -> engine.close(player);
+                case "edit" -> {
+                    if (!player.hasPermission("lumamenu.admin")) throw new IllegalStateException("没有管理权限");
+                    if (args.length > 2) throw new IllegalArgumentException("/lumamenu edit [布局文件名]");
+                    var launcher = Bukkit.getServicesManager().load(LumaMenuEditing.Launcher.class);
+                    if (launcher == null) throw new IllegalStateException("未安装或未启用网页编辑器附属 LumaMenuEditor");
+                    String file = args.length == 2 ? args[1].replaceFirst("\\.yml$", "") : "";
+                    if (!file.isEmpty() && !engine.files().containsKey(file))
+                        throw new IllegalArgumentException("布局文件不存在：" + file);
+                    launcher.open(player, file);
+                }
                 case "debug" -> {
                     if (!player.hasPermission("lumamenu.admin")) throw new IllegalStateException("没有管理权限");
                     if (args.length > 2) throw new IllegalArgumentException("/lumamenu debug [on|off]");
@@ -232,7 +266,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                         player.sendMessage(choices);
                     }
                 }
-                default -> sender.sendMessage("/lumamenu [open <页面>|list|calibrate|close|mode|theme|debug|reload [文件]|status|export]");
+                default -> sender.sendMessage("/lumamenu [open <页面>|list|calibrate|close|mode|theme|debug|edit [文件]|reload [文件]|status|export]");
             }
         } catch (Exception error) {
             sender.sendMessage("LumaMenu：" + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()));
@@ -246,12 +280,13 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         if (engine == null) return List.of();
         if (args.length == 1) {
             List<String> values = new ArrayList<>(List.of("open", "list", "calibrate", "close", "mode", "theme"));
-            if (sender.hasPermission("lumamenu.admin")) values.addAll(List.of("debug", "reload", "status", "export"));
+            if (sender.hasPermission("lumamenu.admin")) values.addAll(List.of("debug", "edit", "reload", "status", "export"));
             return values.stream().filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("open"))
             return engine.pages().stream().filter(s -> s.startsWith(args[1])).sorted().toList();
-        if (args.length == 2 && args[0].equalsIgnoreCase("reload") && sender.hasPermission("lumamenu.admin"))
+        if (args.length == 2 && (args[0].equalsIgnoreCase("reload") || args[0].equalsIgnoreCase("edit"))
+            && sender.hasPermission("lumamenu.admin"))
             return engine.files().keySet().stream().filter(s -> s.startsWith(args[1])).sorted().toList();
         if (args.length == 2 && args[0].equalsIgnoreCase("debug"))
             return List.of("on", "off").stream().filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
@@ -271,10 +306,12 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     }
     /** A calibrated player's profile is built in the background right away; quitting releases it. */
     @EventHandler public void join(PlayerJoinEvent event) { engine.warm(event.getPlayer()); }
+    @EventHandler public void input(org.bukkit.event.player.PlayerInputEvent event) { engine.input(event.getPlayer(), event.getInput()); }
     @EventHandler public void quit(PlayerQuitEvent event) {
         engine.close(event.getPlayer(), Reason.PLAYER_QUIT, false);
         engine.forget(event.getPlayer().getUniqueId());
         inventory.forget(event.getPlayer().getUniqueId());
+        hud.forget(event.getPlayer().getUniqueId());
         ownDialogs.clear(event.getPlayer().getUniqueId());
         joinPrompted.remove(event.getPlayer().getUniqueId());
     }
@@ -380,18 +417,69 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         PacketEvents.getAPI().getEventManager().registerListener(riderGuard);
     }
 
+    /** Interactions that need the Dialog gone; with a creative-told client they close the menu (see ClientHud). */
+    private static final Set<PacketTypeCommon> INTERACTIONS = Set.of(PacketType.Play.Client.PLAYER_DIGGING,
+        PacketType.Play.Client.CREATIVE_INVENTORY_ACTION, PacketType.Play.Client.PLAYER_ABILITIES,
+        PacketType.Play.Client.ANIMATION, PacketType.Play.Client.INTERACT_ENTITY, PacketType.Play.Client.USE_ITEM,
+        PacketType.Play.Client.PLAYER_BLOCK_PLACEMENT, PacketType.Play.Client.PICK_ITEM,
+        PacketType.Play.Client.PICK_ITEM_FROM_BLOCK, PacketType.Play.Client.PICK_ITEM_FROM_ENTITY);
+
+    private void registerHudGuard() {
+        // Last, so the action bar other plugins composed is what loses the crosshair.
+        hudGuard = new PacketListenerAbstract(PacketListenerPriority.HIGHEST) {
+            @Override public void onPacketSend(PacketSendEvent event) {
+                var type = event.getPacketType();
+                if (type != PacketType.Play.Server.ACTION_BAR && type != PacketType.Play.Server.SYSTEM_CHAT_MESSAGE) return;
+                UUID id = event.getUser().getUUID();
+                if (id == null || !hud.menu(id) || event.isCancelled()) return;
+                if (type == PacketType.Play.Server.ACTION_BAR) {
+                    var packet = new WrapperPlayServerActionBar(event);
+                    Component text = packet.getActionBarText(), stripped = ClientHud.withoutCrosshair(text);
+                    if (stripped == text) return;
+                    packet.setActionBarText(stripped);
+                } else {
+                    var packet = new WrapperPlayServerSystemChatMessage(event);
+                    if (!packet.isOverlay()) return;
+                    Component text = packet.getMessage(), stripped = ClientHud.withoutCrosshair(text);
+                    if (stripped == text) return;
+                    packet.setMessage(stripped);
+                }
+                event.markForReEncode(true);
+            }
+            @Override public void onPacketReceive(PacketReceiveEvent event) {
+                if (!INTERACTIONS.contains(event.getPacketType())) return;
+                UUID id = event.getUser().getUUID();
+                if (id == null || !hud.creative(id)) return;
+                // The server ignores creative slots from a survival player anyway; do not let them through.
+                if (event.getPacketType() == PacketType.Play.Client.CREATIVE_INVENTORY_ACTION) event.setCancelled(true);
+                if (!isEnabled()) return;
+                Bukkit.getScheduler().runTask(LumaMenuPlugin.this, () -> {
+                    Player player = Bukkit.getPlayer(id);
+                    if (player != null) engine.interacted(player);
+                });
+            }
+        };
+        PacketEvents.getAPI().getEventManager().registerListener(hudGuard);
+    }
+
     private final class Platform implements MenuEngine.Host {
         @Override public boolean cornerClose() { return settings.cornerClose(); }
         @Override public boolean closeWithEscape() { return settings.closeWithEscape(); }
-        @Override public void begin(Player player) { inventory.begin(player); }
+        @Override public int calibrationClicks() { return settings.calibrationClicks(); }
+        @Override public void begin(Player player) {
+            inventory.begin(player);
+            try { hud.begin(player, settings.hideExperienceBar()); }
+            catch (RuntimeException error) {
+                inventory.end(player);
+                throw error;
+            }
+        }
         @Override public void end(Player player) {
             ownDialogs.clear(player.getUniqueId());
-            inventory.end(player);
+            try { hud.end(player); }
+            finally { inventory.end(player); }
         }
-        @Override public boolean look(Player player, boolean down) {
-            // Nether level lights point in opposite directions, so looking down cannot even out the faces.
-            return down && player.getWorld().getEnvironment() != org.bukkit.World.Environment.NETHER;
-        }
+        @Override public boolean look(Player player, boolean down) { return down; }
         @Override public void requireMain() {
             if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("LumaMenu API仅供服务器主线程调用");
         }
@@ -457,11 +545,11 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             List<io.papermc.paper.registry.data.dialog.input.DialogInput> inputs = form.inputs().stream()
                 .map(input -> {
                     var text = io.papermc.paper.registry.data.dialog.input.DialogInput.text(input.key(),
-                        Component.text(input.label())).initial(input.initial()).maxLength(input.maxLength());
-                    // Long limits: a wide box of 4..8 lines (9 px each plus padding) instead of one line.
-                    if (input.large()) text.width(300).multiline(
+                        Component.text(input.label())).initial(input.initial()).maxLength(input.maxLength())
+                        .width(input.width());
+                    if (input.multiline()) text.multiline(
                         io.papermc.paper.registry.data.dialog.input.TextDialogInput.MultilineOptions.create(null,
-                            Math.clamp((input.maxLength() + 31) / 32, 4, 8) * 9 + 8));
+                            input.height()));
                     return (io.papermc.paper.registry.data.dialog.input.DialogInput) text.build();
                 })
                 .toList();
@@ -480,6 +568,42 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 .base(DialogBase.builder(Component.text(form.title())).pause(false).canCloseWithEscape(true)
                     .afterAction(DialogBase.DialogAfterAction.NONE).inputs(inputs).build())
                 .type(DialogType.multiAction(List.of(submit)).exitAction(cancel).build()));
+            ownDialogs.expect(player.getUniqueId());
+            try { player.showDialog(dialog); }
+            catch (RuntimeException error) { ownDialogs.cancel(player.getUniqueId()); throw error; }
+        }
+        @Override public void presets(Player player, MenuEngine.PresetView view,
+                                      java.util.function.Consumer<MenuEngine.PresetChoice> chosen) {
+            boolean[] done = {false};
+            java.util.function.Function<MenuEngine.PresetChoice, io.papermc.paper.registry.data.dialog.action.DialogActionCallback> pick =
+                choice -> (view0, audience) -> {
+                    Runnable run = () -> { if (done[0]) return; done[0] = true; chosen.accept(choice); };
+                    if (Bukkit.isPrimaryThread()) run.run();
+                    else if (isEnabled()) Bukkit.getScheduler().runTask(LumaMenuPlugin.this, run);
+                };
+            var options = net.kyori.adventure.text.event.ClickCallback.Options.builder()
+                .uses(1).lifetime(java.time.Duration.ofHours(1)).build();
+            List<ActionButton> buttons = new ArrayList<>();
+            for (int i = 0; i < view.labels().size(); i++) {
+                buttons.add(ActionButton.builder(Component.text(view.labels().get(i))).width(200)
+                    .tooltip(Component.text("使用这个定位"))
+                    .action(DialogAction.customClick(pick.apply(new MenuEngine.PresetChoice(MenuEngine.PresetAction.USE, i)), options)).build());
+                buttons.add(ActionButton.builder(Component.text("删除", NamedTextColor.RED)).width(50)
+                    .action(DialogAction.customClick(pick.apply(new MenuEngine.PresetChoice(MenuEngine.PresetAction.DELETE, i)), options)).build());
+            }
+            if (view.canAdd())
+                buttons.add(ActionButton.builder(Component.text("+ 新建预设")).width(200)
+                    .tooltip(Component.text("按当前窗口、GUI缩放和视野重新定位，存为新预设"))
+                    .action(DialogAction.customClick(pick.apply(new MenuEngine.PresetChoice(MenuEngine.PresetAction.ADD, -1)), options)).build());
+            var cancel = ActionButton.builder(Component.text("关闭")).width(100)
+                .action(DialogAction.customClick(pick.apply(new MenuEngine.PresetChoice(MenuEngine.PresetAction.CANCEL, -1)), options)).build();
+            String note = view.labels().isEmpty() ? "还没有定位预设，新建一个后才能打开菜单。"
+                : "选择与当前窗口大小、GUI缩放和视野对应的预设；▶ 为正在使用的。最多" + CalibrationPresets.MAX + "个"
+                    + (view.canAdd() ? "。" : "，已满，删除一个后才能新建。");
+            Dialog dialog = Dialog.create(factory -> factory.empty()
+                .base(DialogBase.builder(Component.text("菜单定位预设")).pause(false).canCloseWithEscape(true)
+                    .body(List.of(DialogBody.plainMessage(Component.text(note), 260))).build())
+                .type(DialogType.multiAction(buttons).columns(2).exitAction(cancel).build()));
             ownDialogs.expect(player.getUniqueId());
             try { player.showDialog(dialog); }
             catch (RuntimeException error) { ownDialogs.cancel(player.getUniqueId()); throw error; }
@@ -552,11 +676,19 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     }
 
     static Settings readSettings(org.bukkit.configuration.ConfigurationSection config) {
-        for (String key : List.of("corner-close", "hide-warning", "calibrate-on-join", "close-with-escape"))
+        for (String key : List.of("corner-close", "hide-warning", "calibrate-on-join", "close-with-escape",
+                "hide-experience-bar", "replace-crosshair"))
             if (config.contains(key) && !config.isBoolean(key))
                 throw new IllegalArgumentException(key + "需要true/false");
         return new Settings(config.getBoolean("corner-close", true), config.getBoolean("hide-warning", true),
             HitGeometry.step(config.get("rotation-hit-step")), config.getBoolean("calibrate-on-join", true),
-            config.getBoolean("close-with-escape", true));
+            config.getBoolean("close-with-escape", true), config.getBoolean("hide-experience-bar", true),
+            config.getBoolean("replace-crosshair", false), clicks(config));
+    }
+    private static int clicks(org.bukkit.configuration.ConfigurationSection config) {
+        Object value = config.get("calibration-clicks", Calibration.DEFAULT_CLICKS);
+        if (!(value instanceof Integer clicks) || !Calibration.STEPS.containsKey(clicks))
+            throw new IllegalArgumentException("calibration-clicks只能是2、3或4");
+        return clicks;
     }
 }

@@ -137,22 +137,60 @@ final class CraftEngineImages {
 
     /** {@code namespace:path} under some CE pack's {@code textures/}; null when no pack has it. */
     private BufferedImage read(String location) {
+        Path file = file(location);
+        if (file == null) return null;
+        try {
+            BufferedImage image = ImageIO.read(file.toFile());
+            if (image == null) throw new IllegalArgumentException("无法读取CE图片：" + file);
+            return image;
+        } catch (IOException error) { throw new IllegalArgumentException("无法读取CE资源：" + location, error); }
+    }
+
+    /** The PNG of {@code namespace:path} in the first CE pack (sorted) that has it; null when none does. */
+    Path file(String location) {
         int colon = location.indexOf(':');
         String namespace = colon < 0 ? "minecraft" : location.substring(0, colon);
         String path = colon < 0 ? location : location.substring(colon + 1);
         if (!path.endsWith(".png")) path += ".png";
-        if (path.contains("..")) throw new IllegalArgumentException("CE路径非法：" + location);
+        if (path.contains("..") || namespace.contains("..") || namespace.contains("/"))
+            throw new IllegalArgumentException("CE路径非法：" + location);
         if (!Files.isDirectory(resources)) return null;
         try (var packs = Files.list(resources)) {
             for (Path pack : packs.filter(Files::isDirectory).sorted().toList()) {
                 Path file = pack.resolve("resourcepack/assets").resolve(namespace).resolve("textures").resolve(path);
-                if (!Files.isRegularFile(file)) continue;
-                BufferedImage image = ImageIO.read(file.toFile());
-                if (image == null) throw new IllegalArgumentException("无法读取CE图片：" + file);
-                return image;
+                if (Files.isRegularFile(file)) return file;
             }
         } catch (IOException error) { throw new IllegalArgumentException("无法读取CE资源：" + location, error); }
         return null;
+    }
+
+    /** The atlas cell a font image source shows, as its PNG pixels; null when its file is a vanilla texture. */
+    BufferedImage cell(String source) {
+        String id = source.substring(source.indexOf('/') + 1);
+        var definition = definitions().get(id);
+        if (definition == null) throw new IllegalArgumentException("CE中没有图片：" + id);
+        String ref = definition.getString("ref", "");
+        ConfigurationSection sheet = definition;
+        int row = 0, column = 0;
+        if (!ref.isBlank()) {
+            String[] parts = ref.split(":");
+            sheet = parts.length >= 2 ? definitions().get(parts[0] + ":" + parts[1]) : null;
+            if (sheet == null) throw new IllegalArgumentException("CE图片ref须指向原始图集：" + id);
+            try {
+                row = parts.length >= 3 ? Integer.parseInt(parts[2]) : definition.getInt("row", 0);
+                column = parts.length == 4 ? Integer.parseInt(parts[3]) : definition.getInt("col", 0);
+            } catch (NumberFormatException error) { throw new IllegalArgumentException("CE图集格子坐标非法：" + id); }
+        }
+        List<String> grid = new ArrayList<>();
+        if (sheet.contains("chars")) for (String line : sheet.getStringList("chars")) grid.add(unescape(line));
+        else grid.add(unescape(sheet.getString("char", " ")));
+        int columns = Math.max(1, grid.getFirst().codePointCount(0, grid.getFirst().length()));
+        BufferedImage image = read(sheet.getString("file", ""));
+        if (image == null) return null;
+        int width = image.getWidth() / columns, height = image.getHeight() / grid.size();
+        if (row < 0 || row >= grid.size() || column < 0 || column >= columns || width < 1 || height < 1)
+            throw new IllegalArgumentException("CE图集格子越界：" + id);
+        return image.getSubimage(column * width, row * height, width, height);
     }
 
     /** 26.3 {@code BitmapProvider.getActualGlyphWidth}: trailing fully transparent columns do not advance. */

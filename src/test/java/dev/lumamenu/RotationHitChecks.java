@@ -44,6 +44,18 @@ final class RotationHitChecks {
         joinOff.set("calibrate-on-join", "yes");
         try { LumaMenuPlugin.readSettings(joinOff); throw new AssertionError("non-boolean calibrate-on-join accepted"); }
         catch (IllegalArgumentException expected) { checks++; }
+        check(LumaMenuPlugin.readSettings(new YamlConfiguration()).calibrationClicks() == 3, "three clicks per corner by default");
+        for (Object clicks : List.of(2, 3, 4)) {
+            var config = new YamlConfiguration();
+            config.set("calibration-clicks", clicks);
+            check(LumaMenuPlugin.readSettings(config).calibrationClicks() == (int) clicks, "calibration-clicks " + clicks);
+        }
+        for (Object invalid : List.of(1, 5, "3", 2.5)) {
+            var config = new YamlConfiguration();
+            config.set("calibration-clicks", invalid);
+            try { LumaMenuPlugin.readSettings(config); throw new AssertionError("calibration-clicks accepted " + invalid); }
+            catch (IllegalArgumentException expected) { checks++; }
+        }
         JsonArray sizes = new JsonArray(), fixtures = new JsonArray();
         for (var mapping : List.of(new Calibration.Mapping(200, 200, 226, 90),
                                   new Calibration.Mapping(310, 170, 205, 82))) {

@@ -360,6 +360,7 @@ public final class NativeHitChecks {
             load(pack, "hit", false);
             load(pack, "hit_debug", false);
             load(pack, "chrome", false);
+            load(pack, "crosshair", false);
             models(pack);
             NativePlaneChecks.run(root);
             NativeModeChecks.run(root);
@@ -367,6 +368,10 @@ public final class NativeHitChecks {
             NativeImageChecks.run(root);
             TextLayoutChecks.run(root);
             NativeFrameChecks.run(root, font());
+            // replace-crosshair off (fixture pack), then a pack exported with it on.
+            NativeCrosshairChecks.invisible(font());
+            load(root.resolve("crosshair-pack"), "crosshair", false);
+            NativeCrosshairChecks.run(root, font(), fonts.get("lumamenu:crosshair").get(0xE000));
             try (var fixtures = Files.list(root.resolve("fixtures"))) {
                 for (Path path : fixtures.sorted().toList()) fixture(font(), path);
             }
@@ -375,7 +380,7 @@ public final class NativeHitChecks {
             try { fixture(font(), root.resolve("fixtures/adjacent-single-units.json")); }
             catch (AssertionError expected) { caught = true; }
             check(caught, "fault control: whole-line glyph height must break actual one-unit hit checks");
-            System.out.println("Native26.3 checks passed: " + (checks + NativeDialogChecks.checks() + NativeFrameChecks.checks())
+            System.out.println("Native26.3 checks passed: " + (checks + NativeDialogChecks.checks() + NativeFrameChecks.checks() + NativeCrosshairChecks.checks)
                 + "; exact GUI pixels checked: " + pixels
                 + "; text layout " + TextLayoutChecks.checks + "; fault control rejected; no GPU/client interaction.");
         } finally {

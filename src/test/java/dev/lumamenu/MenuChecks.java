@@ -12,6 +12,8 @@ import com.google.gson.*;
 import net.kyori.adventure.text.*;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import net.kyori.adventure.key.Key;
 import org.bukkit.World;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
@@ -65,6 +67,8 @@ public final class MenuChecks {
         renderModes();
         rotatedSessions();
         interactions();
+        presets();
+        calibrationCheck();
         templates();
         offsets();
         forms();
@@ -76,6 +80,7 @@ public final class MenuChecks {
         coordinates();
         renderer();
         clientInventory();
+        clientHud();
         lookDown();
         bodyCompaction();
         ownDialogs();
@@ -84,7 +89,7 @@ public final class MenuChecks {
         RotationHitChecks.run(root);
         TransformChecks.run(root);
         ModelFitChecks.run(root);
-        LookDownChecks.run(Path.of("build/native-evidence"));
+        SheetChecks.run(Path.of("build/native-evidence"));
         System.out.println("LumaMenu checks passed: " + checks + "; native fixtures: build/native-evidence");
     }
 
@@ -154,7 +159,7 @@ public final class MenuChecks {
     private static void compiler() throws Exception {
         Map<String, Layouts.Page> pages = demo();
         check(pages.keySet().stream().filter(id -> !id.contains(Themes.VARIANT)).collect(java.util.stream.Collectors.toSet())
-                .equals(Set.of("showcase", "demo", "detail", "coordinates", "transforms", "features", "features-native")),
+                .equals(Set.of("showcase", "demo", "detail", "coordinates", "transforms", "features", "features-native", "calibration-check")),
             "bundled YAML retains normal pages only");
         check(pages.get("demo").lookDown() && pages.get("transforms").lookDown()
             && !pages.get("detail").lookDown() && !pages.get("coordinates").lookDown(),
@@ -518,6 +523,59 @@ public final class MenuChecks {
                 settledScreens++;
             }
         check(settledScreens > 600, "corner calibration covered the screen/centre-offset grid");
+        for (int clicks : new int[]{2, 4}) {
+            double worst = 0;
+            for (int screen = 240; screen <= 400; screen++)
+                for (int offset : new int[]{-12, 0, 12}) {
+                    var probe = new Calibration.Mapping(200, 200, 226, screen / 2.0 - Calibration.PROBE_TOP + offset);
+                    if (probe.project(Calibration.TARGETS.getFirst()).y() < 0) continue;
+                    var attempt = new Calibration.Attempt(clicks);
+                    cornerClicks(attempt, screen, probe);
+                    var settled = attempt.settled();
+                    check(Math.abs(settled.frame().screen() - screen) <= (clicks == 2 ? Calibration.Frame.MARGIN : 0)
+                        && 9 * settled.frame().rows() + 18 <= screen - 38,
+                        clicks + " clicks per corner measure a " + screen + "-high screen within the body margin");
+                    double top = screen - 193 - 9 * settled.frame().trail();
+                    worst = Math.max(worst, Math.abs(settled.mapping().oy() - (Calibration.PROBE_TOP + probe.oy() - top)));
+                }
+            check(worst <= (clicks == 2 ? 2 : 1), clicks + " clicks per corner keep the axis offset close (" + worst + ")");
+        }
+        // Clicks up to half a unit off the cross, swinging to the other side on every click, never leave the cross
+        // off the next grid: each refinement grid reaches past the chosen cell.
+        int shaky = 0;
+        for (int clicks : new int[]{2, 3, 4})
+            for (int screen = 240; screen <= 400; screen += 3)
+                for (double shift : new double[]{0, .3, .7})
+                    for (int sx : new int[]{-1, 1})
+                        for (int sy : new int[]{-1, 1}) {
+                            var probe = new Calibration.Mapping(200, 200, 226 + shift,
+                                screen / 2.0 - Calibration.PROBE_TOP + shift);
+                            if (probe.project(Calibration.TARGETS.getFirst()).y() < 0) continue;
+                            var attempt = new Calibration.Attempt(clicks);
+                            for (int i = 0; i < 60 && !attempt.complete(); i++) {
+                                var p = where(attempt, screen, probe);
+                                double side = i % 2 == 0 ? .49 : -.49;
+                                int x = (int) Math.floor(p.x() + sx * side), y = (int) Math.floor(p.y() + sy * side);
+                                var cell = attempt.cells().stream().filter(b -> b.contains(x, y)).findFirst();
+                                check(cell.isPresent(), clicks + " clicks: a click half a unit off the cross stays on the grid ("
+                                    + screen + "/" + shift + "/" + attempt.label() + ")");
+                                attempt.choose(cell.get());
+                            }
+                            check(attempt.complete(), "shaky clicks still finish the calibration");
+                            shaky++;
+                        }
+        check(shaky > 1000, "shaky-click cases ran");
+        for (int clicks : new int[]{2, 3, 4}) {
+            var attempt = new Calibration.Attempt(clicks);
+            for (int i = 0; i < 60 && !attempt.complete(); i++) {
+                check(attempt.cells().size() <= 105, clicks + " clicks: every grid fits the Dialog body budget");
+                attempt.choose(cellAt(attempt, where(attempt, 327, MAPPING)));
+            }
+        }
+        check(new Calibration.Attempt().clicks() == Calibration.DEFAULT_CLICKS && Calibration.DEFAULT_CLICKS == 3,
+            "three clicks per corner by default");
+        rejects(() -> new Calibration.Attempt(1), "one click per corner is refused");
+        rejects(() -> new Calibration.Attempt(5), "five clicks per corner are refused");
         var stuck = new Calibration.Attempt();
         measure(stuck, MAPPING);
         measure(stuck, MAPPING);
@@ -825,9 +883,10 @@ public final class MenuChecks {
         Path layouts = dir.resolve("layouts");
         Files.createDirectories(layouts);
         try (var files = Files.list(Path.of("src/main/resources/layouts"))) {
-            // Old cache formats predate templates and forms, so the showcase page cannot appear in them.
+            // Old cache formats predate templates, forms and page state, so those pages cannot appear in them.
             for (Path file : files.toList())
-                if (!file.getFileName().toString().equals("showcase.yml")) Files.copy(file, layouts.resolve(file.getFileName()));
+                if (!Set.of("showcase.yml", "calibration-check.yml").contains(file.getFileName().toString()))
+                    Files.copy(file, layouts.resolve(file.getFileName()));
         }
         Client client = new Client();
         Client second = new Client();
@@ -951,7 +1010,7 @@ public final class MenuChecks {
         engine.close(client.player, LumaMenuApi.Reason.PLAYER_DIED, true);
         check(callbacks.size() == damageCallbacks && closed.size() == damageClosed + 1
             && host.ends == damageEnds + 1, "late clicks or death cannot revive or close a damaged menu twice");
-        engine.calibrate(client.player);
+        engine.measure(client.player);
         damageListener.callEvent(damage);
         check(engine.activeCount() == 0 && !renderer.active(client.id)
             && align.get(client.id).equals(MAPPING), "attack also closes calibration without overwriting its saved mapping");
@@ -975,11 +1034,11 @@ public final class MenuChecks {
         engine.tick();
         check(!quitting.active() && !renderer.active(client.id), "disconnect removes session without writes to disconnected client");
         client.online = true;
-        engine.calibrate(client.player);
+        engine.measure(client.player);
         String cancel = clickAt(host.body(client.id), 445, 4);
         engine.click(client.player, cancel);
         check(align.get(client.id).equals(MAPPING) && !renderer.active(client.id), "Dialog X calibration cancellation preserves previous mapping");
-        engine.calibrate(client.player);
+        engine.measure(client.player);
         for (int target = 0; target < 4; target++) {
             float previousSize = Float.POSITIVE_INFINITY;
             for (int round = 0; round < 3; round++) {
@@ -1050,6 +1109,12 @@ public final class MenuChecks {
         }
         check(new Calibration.Store(dir.resolve("calibration.properties")).get(client.id) != null
             && !renderer.active(client.id), "twelve encoded clicks save calibration and clean marker plus backing");
+        var savedPresets = new Calibration.Store(dir.resolve("calibration.properties")).presets();
+        check(savedPresets.list(client.id).size() == 1 && savedPresets.active(client.id) == 1
+            && savedPresets.list(client.id).getFirst().name().equals("预设 1")
+            && savedPresets.list(client.id).getFirst().mapping().equals(align.get(client.id))
+            && savedPresets.list(client.id).getFirst().frame().equals(align.frame(client.id)),
+            "a finished calibration is stored as the first free preset and put in use");
         check(new Calibration.Store(dir.resolve("calibration.properties")).frame(client.id).screen() > 0
             && Math.abs(align.get(client.id).oy() - (MAPPING.oy() + .5 + Calibration.PROBE_TOP
                 - align.frame(client.id).top())) < 1, "a new calibration is saved as v4 with its frame offset");
@@ -1201,7 +1266,7 @@ public final class MenuChecks {
             "coordinate opens, probes and back do not rewrite the saved transform cache");
         engine.close(client.player);
         engine.demo(client.player, "coordinates");
-        engine.calibrate(client.player);
+        engine.measure(client.player);
         engine.click(client.player, identifier(host.exits.get(client.id)));
         check(align.get(client.id).equals(MAPPING) && !renderer.active(client.id),
             "coordinate recalibration cancellation preserves saved mapping and cleans displays");
@@ -1581,6 +1646,112 @@ public final class MenuChecks {
         renderer.updateText(client.player, Map.of("p", "0"));
         check(sent.size() == 1 && value(((WrapperPlayServerEntityMetadata) sent.getFirst()).getEntityMetadata(), 25).equals(0),
             "an empty bar hides its fill in place");
+        heads();
+    }
+
+    private static void heads() throws Exception {
+        var page = Layouts.parse("heads", yamlOf("""
+            id: heads
+            frontend:
+              who: {type: model, source: 'minecraft:player_head', size: 20, profile: '{who}', offset: {x: 100, y: 50}}
+              fixed: {type: item, source: 'minecraft:player_head', width: 16, height: 16, profile: Notch, offset: {x: 140, y: 50}}
+              plain: {type: model, source: 'minecraft:player_head', size: 20, offset: {x: 180, y: 50}}
+            """)).get("heads");
+        java.util.function.Function<String, Layouts.Visual> head = id -> page.visuals().stream()
+            .filter(v -> v.id().equals(id)).findFirst().orElseThrow();
+        check(head.apply("who").kind().equals("item") && head.apply("who").content().equals("{who}")
+            && DisplayRenderer.dynamicHead(head.apply("who")) && !DisplayRenderer.dynamicHead(head.apply("fixed"))
+            && head.apply("who").inventoryPose() && page.variables().isEmpty(),
+            "a player head keeps its profile template; only variable owners change at runtime");
+        for (String bad : List.of(
+                "{h: {type: model, source: 'minecraft:stone', size: 20, profile: Notch}}",
+                "{h: {type: text, content: x, profile: Notch}}",
+                "{h: {type: block, source: 'minecraft:player_head', width: 16, height: 16, profile: Notch}}"))
+            rejects(() -> parse("id: t\nfrontend: " + bad), "profile only on player head items: " + bad);
+        var byName = DisplayRenderer.headProfile(" Steve_1 ");
+        UUID id = UUID.randomUUID();
+        var byId = DisplayRenderer.headProfile(id.toString());
+        check(byName.getName().equals("Steve_1") && byName.getId() == null && byName.getProperties().isEmpty()
+            && byId.getName() == null && id.equals(byId.getId()) && byId.getProperties().isEmpty(),
+            "offline owners become partial profiles the client resolves itself");
+        check(DisplayRenderer.headProfile("") == null && DisplayRenderer.headProfile("名字") == null
+            && DisplayRenderer.headProfile("a_name_far_too_long") == null, "blank or invalid owners show the default head");
+        List<PacketWrapper<?>> sent = new ArrayList<>();
+        var client = new Client();
+        var renderer = displays((p, packet) -> { serialize(packet); sent.add(packet); });
+        var prepared = DisplayRenderer.prepare(page, MAPPING);
+        java.util.function.Function<String, Integer> index = vid -> {
+            for (int i = 0; i < prepared.size(); i++) if (prepared.get(i).visual().id().equals(vid)) return i;
+            throw new IllegalStateException(vid);
+        };
+        java.util.function.Function<List<EntityData<?>>, String> owner = data -> {
+            var stack = (com.github.retrooper.packetevents.protocol.item.ItemStack) value(data, 23);
+            return stack.getComponent(ComponentTypes.PROFILE).map(p -> p.getName()).orElse(null);
+        };
+        renderer.show(client.player, prepared, Map.of("who", "Alex_2"));
+        var metadata = sent.stream().filter(WrapperPlayServerEntityMetadata.class::isInstance)
+            .map(WrapperPlayServerEntityMetadata.class::cast).toList();
+        check("Alex_2".equals(owner.apply(metadata.get(index.apply("who")).getEntityMetadata()))
+            && "Notch".equals(owner.apply(metadata.get(index.apply("fixed")).getEntityMetadata()))
+            && owner.apply(metadata.get(index.apply("plain")).getEntityMetadata()) == null,
+            "shown heads carry the expanded owner; heads without profile stay default");
+        sent.clear();
+        renderer.updateText(client.player, Map.of("who", "Alex_2"));
+        check(sent.isEmpty(), "an unchanged owner sends nothing");
+        renderer.updateText(client.player, Map.of("who", "Kai"));
+        check(sent.size() == 1 && "Kai".equals(owner.apply(((WrapperPlayServerEntityMetadata) sent.getFirst()).getEntityMetadata())),
+            "a changed owner resends only that head");
+        tints();
+    }
+
+    private static void tints() throws Exception {
+        var page = Layouts.parse("tints", yamlOf("""
+            id: tints
+            frontend:
+              live: {type: item, source: 'minecraft:paper', item-model: '{model}', tints: '{colors}', width: 20, height: 20, offset: {x: 100, y: 50}}
+              fixed: {type: item, source: 'minecraft:paper', item-model: 'x:y', bounds: {x: 1, y: 1, z: 1}, tints: '#FF0000, 00ff00 #0000FF', width: 20, height: 20, offset: {x: 140, y: 50}}
+              plain: {type: item, source: 'minecraft:paper', item-model: 'x:y', bounds: {x: 1, y: 1, z: 1}, width: 20, height: 20, offset: {x: 180, y: 50}}
+            """)).get("tints");
+        check(DisplayRenderer.tints("#FF0000, 00ff00 #0000FF").stream().map(c -> c.asRGB()).toList()
+                .equals(List.of(0xFF0000, 0x00FF00, 0x0000FF))
+            && DisplayRenderer.tints("#FF0000,#GG0000") == null && DisplayRenderer.tints("  ").isEmpty()
+            && DisplayRenderer.tints(String.join(",", java.util.Collections.nCopies(DisplayRenderer.MAX_TINTS + 1, "#000000"))) == null,
+            "tints are #RRGGBB lists separated by commas or spaces, up to the limit");
+        for (String bad : List.of(
+                "{t: {type: text, content: x, tints: '#FF0000'}}",
+                "{t: {type: image, source: 'minecraft:item/paper', tints: '#FF0000'}}",
+                "{t: {type: item, source: 'minecraft:paper', tints: 'red'}}"))
+            rejects(() -> parse("id: t\nfrontend: " + bad), "tints only as valid lists on items: " + bad);
+        List<PacketWrapper<?>> sent = new ArrayList<>();
+        var client = new Client();
+        var renderer = displays((p, packet) -> { serialize(packet); sent.add(packet); });
+        var prepared = DisplayRenderer.prepare(page, MAPPING);
+        java.util.function.Function<String, Integer> index = vid -> {
+            for (int i = 0; i < prepared.size(); i++) if (prepared.get(i).visual().id().equals(vid)) return i;
+            throw new IllegalStateException(vid);
+        };
+        java.util.function.Function<List<EntityData<?>>, List<Integer>> colors = data -> {
+            var stack = (com.github.retrooper.packetevents.protocol.item.ItemStack) value(data, 23);
+            return stack.getComponent(ComponentTypes.CUSTOM_MODEL_DATA_LISTS)
+                .map(c -> c.getColors().stream().map(color -> color.asRGB()).toList()).orElse(null);
+        };
+        renderer.show(client.player, prepared, Map.of("model", "a:bust", "colors", "#123456,#ABCDEF"));
+        var metadata = sent.stream().filter(WrapperPlayServerEntityMetadata.class::isInstance)
+            .map(WrapperPlayServerEntityMetadata.class::cast).toList();
+        check(List.of(0x123456, 0xABCDEF).equals(colors.apply(metadata.get(index.apply("live")).getEntityMetadata()))
+            && List.of(0xFF0000, 0x00FF00, 0x0000FF).equals(colors.apply(metadata.get(index.apply("fixed")).getEntityMetadata()))
+            && colors.apply(metadata.get(index.apply("plain")).getEntityMetadata()) == null,
+            "shown items carry their expanded tints as custom_model_data colors; items without tints carry none");
+        sent.clear();
+        renderer.updateText(client.player, Map.of("model", "a:bust", "colors", "#123456,#ABCDEF"));
+        check(sent.isEmpty(), "unchanged tints send nothing");
+        renderer.updateText(client.player, Map.of("model", "a:bust", "colors", "#000000"));
+        check(sent.size() == 1 && List.of(0x000000).equals(colors.apply(((WrapperPlayServerEntityMetadata) sent.getFirst()).getEntityMetadata())),
+            "changed tints resend only that item");
+        sent.clear();
+        renderer.updateText(client.player, Map.of("model", "a:bust", "colors", "oops"));
+        check(sent.size() == 1 && colors.apply(((WrapperPlayServerEntityMetadata) sent.getFirst()).getEntityMetadata()) == null,
+            "an invalid runtime list tints nothing instead of failing");
     }
 
     private static void playerThemes() throws Exception {
@@ -1762,6 +1933,158 @@ public final class MenuChecks {
     }
 
     /** DialogMenu template batch: variables, state actions and visible-if with hit areas recomputed beneath. */
+    /** Calibration presets: migration, the native list, use, delete, the limit, stale lists and the menu action. */
+    private static void presets() throws Exception {
+        Path dir = Files.createTempDirectory(root, "presets-"), layouts = dir.resolve("layouts");
+        Files.createDirectories(layouts);
+        Files.writeString(layouts.resolve("p.yml"), """
+            schema-version: 3
+            id: p
+            frontend:
+              align: {type: button, content: a, width: 60, height: 20, offset: {x: 100, y: 50}, actions: calibrate}
+            """);
+        Client client = new Client();
+        Owner owner = new Owner();
+        Host host = new Host();
+        var align = new Calibration.Store(dir.resolve("calibration.properties"));
+        align.save(client.id, MAPPING);
+        var cache = new MenuCache(dir.resolve("compiled.json.gz"));
+        cache.save(MenuCache.compile(Layouts.load(layouts), align.all(), 2));
+        var engine = new MenuEngine(owner.plugin, host, displays((player, packet) -> serialize(packet)), align, cache,
+            cache.read(), new RenderPreferences(dir.resolve("render-modes.properties")));
+        var store = align.presets();
+        engine.calibrate(client.player);
+        check(store.list(client.id).size() == 1 && store.active(client.id) == 1 && engine.activeCount() == 0
+            && host.presetViews.getLast().equals(new MenuEngine.PresetView(List.of("▶ 预设 1 · 旧版定位"), true)),
+            "a calibration from before presets becomes preset 1; the command opens the native preset list");
+        host.choose(MenuEngine.PresetAction.ADD, -1);
+        check(engine.busy(client.id) && engine.page(client.player) == null, "new preset starts a calibration");
+        engine.click(client.player, identifier(host.exits.get(client.id)));
+        check(!engine.busy(client.id) && store.list(client.id).size() == 1 && align.get(client.id).equals(MAPPING),
+            "a cancelled new preset changes nothing");
+        var other = new Calibration.Mapping(150, 160, 230, 95);
+        store.save(client.id, 2, "预设 2", other, Calibration.Frame.of(330));
+        engine.calibrate(client.player);
+        var view = host.presetViews.getLast();
+        check(view.labels().equals(List.of("预设 1 · 旧版定位", "▶ 预设 2 · 界面高 330")) && view.canAdd(),
+            "presets list in slot order with the one in use marked and the measured GUI height");
+        var stale = host.presetChoices.getLast();
+        host.choose(MenuEngine.PresetAction.USE, 0);
+        check(align.get(client.id).equals(MAPPING) && store.active(client.id) == 1
+            && align.frame(client.id).equals(Calibration.Frame.LEGACY) && host.messages.getLast().contains("预设 1"),
+            "using a preset writes it as the calibration in use");
+        host.choose(MenuEngine.PresetAction.USE, 1);
+        check(align.get(client.id).equals(other) && align.frame(client.id).equals(Calibration.Frame.of(330)),
+            "switching back restores the other preset's mapping and frame");
+        int views = host.presetViews.size();
+        host.choose(MenuEngine.PresetAction.DELETE, 1);
+        check(store.list(client.id).size() == 1 && store.active(client.id) == 1 && align.get(client.id).equals(MAPPING)
+            && host.presetViews.size() == views + 1 && host.presetViews.getLast().labels().size() == 1,
+            "deleting the preset in use falls back to the remaining one and shows the list again");
+        stale.accept(new MenuEngine.PresetChoice(MenuEngine.PresetAction.USE, 1));
+        check(align.get(client.id).equals(MAPPING) && host.messages.getLast().contains("已不存在"),
+            "an old list cannot apply a deleted preset");
+        for (int slot = 2; slot <= CalibrationPresets.MAX; slot++)
+            store.save(client.id, slot, "预设 " + slot, other, Calibration.Frame.of(300 + slot));
+        store.activate(client.id, 1);
+        engine.calibrate(client.player);
+        check(!host.presetViews.getLast().canAdd() && host.presetViews.getLast().labels().size() == CalibrationPresets.MAX
+            && store.free(client.id) == 0, "five presets at most: the new button goes");
+        host.choose(MenuEngine.PresetAction.ADD, -1);
+        check(!engine.busy(client.id) && host.messages.getLast().contains("最多"), "a full list refuses another preset");
+        for (int slot = CalibrationPresets.MAX; slot >= 1; slot--) {
+            engine.calibrate(client.player);
+            host.choose(MenuEngine.PresetAction.DELETE, host.presetViews.getLast().labels().size() - 1);
+        }
+        check(store.list(client.id).isEmpty() && !engine.calibrated(client.player)
+            && host.presetViews.getLast().equals(new MenuEngine.PresetView(List.of(), true)),
+            "deleting every preset removes the calibration and leaves only the new button");
+        int viewCount = host.presetViews.size();
+        engine.calibrate(client.player);
+        check(engine.busy(client.id) && host.presetViews.size() == viewCount,
+            "a player without any calibration goes straight into calibrating");
+        engine.close(client.player);
+        store.save(client.id, 3, "预设 3", MAPPING, Calibration.Frame.LEGACY);
+        align.save(client.id, MAPPING);
+        var menu = engine.open(owner.plugin, client.player, "p", Map.of(), a -> {}, c -> {});
+        engine.click(client.player, clickAt(host.body(client.id), 100, 50));
+        check(!menu.active() && engine.activeCount() == 0 && host.presetViews.getLast().labels().size() == 1,
+            "the calibrate action closes the menu and opens the preset list");
+        host.choose(MenuEngine.PresetAction.CANCEL, -1);
+        check("p".equals(engine.page(client.player)), "closing the list returns to the menu page it came from");
+        check(host.errors.isEmpty(), "preset flow has no failures");
+    }
+
+    /** Clicks this engine's calibration through, aiming like a client whose probe is {@link #MAPPING}. */
+    private static void finishCalibration(MenuEngine engine, Host host, Client client) {
+        var shadow = new Calibration.Attempt(host.clicks);
+        for (int i = 0; i < 60 && !shadow.complete(); i++) {
+            var box = cellAt(shadow, where(shadow, 327, MAPPING));
+            shadow.choose(box);
+            engine.click(client.player, clickAt(host.body(client.id), box.x() + box.width() / 2, box.y() + box.height() / 2));
+        }
+    }
+
+    private static void calibrationCheck() throws Exception {
+        Path dir = Files.createTempDirectory(root, "calibration-check-"), layouts = dir.resolve("layouts");
+        Files.createDirectories(layouts);
+        Files.copy(Path.of("src/main/resources/layouts/calibration-check.yml"), layouts.resolve("calibration-check.yml"));
+        Files.writeString(layouts.resolve("p.yml"), """
+            schema-version: 3
+            id: p
+            frontend:
+              align: {type: button, content: a, width: 60, height: 20, offset: {x: 100, y: 50}, actions: calibrate}
+            """);
+        Client client = new Client();
+        Owner owner = new Owner();
+        Host host = new Host();
+        var align = new Calibration.Store(dir.resolve("calibration.properties"));
+        var cache = new MenuCache(dir.resolve("compiled.json.gz"));
+        cache.save(MenuCache.compile(Layouts.load(layouts), align.all(), 2));
+        DisplayRenderer renderer = displays((player, packet) -> serialize(packet));
+        var engine = new MenuEngine(owner.plugin, host, renderer, align, cache, cache.read(),
+            new RenderPreferences(dir.resolve("render-modes.properties")));
+        var store = align.presets();
+        for (int clicks : new int[]{2, 4}) {
+            host.clicks = clicks;
+            engine.calibrate(client.player);
+            if (!engine.busy(client.id)) host.choose(MenuEngine.PresetAction.ADD, -1);
+            check(engine.busy(client.id) && host.messages.getLast().contains("每个点" + clicks + "次，共" + 4 * clicks + "次"),
+                "the calibration prompt tells the configured click count");
+            finishCalibration(engine, host, client);
+            check(engine.calibrated(client.player) && MenuEngine.CHECK_PAGE.equals(engine.page(client.player))
+                && GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("lumamenu:hit_debug"),
+                clicks + " clicks per corner finish into the check page with the hit areas tinted");
+            engine.close(client.player);
+            check(engine.activeCount() == 0 && !renderer.active(client.id), "closing the check page cleans up");
+        }
+        host.clicks = 3;
+        check(store.list(client.id).size() == 2, "each new calibration took a new preset");
+        // The calibrated frame puts extra rows above the canvas.
+        int below = 9 * align.frame(client.id).extra();
+        var menu = engine.open(owner.plugin, client.player, "p", Map.of(), a -> {}, c -> {});
+        engine.click(client.player, clickAt(host.body(client.id), 100, 50 + below));
+        host.choose(MenuEngine.PresetAction.ADD, -1);
+        check(!menu.active() && engine.busy(client.id), "a new preset from a menu starts calibrating");
+        finishCalibration(engine, host, client);
+        check(MenuEngine.CHECK_PAGE.equals(engine.page(client.player)) && store.list(client.id).size() == 3
+            && store.active(client.id) == 3, "the menu's calibration is saved as preset 3 and shows the check page");
+        engine.click(client.player, clickAt(host.body(client.id), 282, 170 + below));
+        check(engine.busy(client.id) && engine.page(client.player) == null, "the check page's 重新定位 measures again");
+        finishCalibration(engine, host, client);
+        check(store.list(client.id).size() == 3 && store.active(client.id) == 3
+            && MenuEngine.CHECK_PAGE.equals(engine.page(client.player)),
+            "measuring again overwrites the same preset instead of adding one");
+        int scheduled = host.scheduled.size();
+        engine.click(client.player, clickAt(host.body(client.id), 170, 170 + below));
+        check(engine.page(client.player) == null && host.scheduled.size() == scheduled + 1, "对齐了 closes the check page");
+        host.runLater();
+        check("p".equals(engine.page(client.player)), "closing the check page returns to the menu it came from");
+        engine.close(client.player);
+        check(host.errors.isEmpty() && host.begins == host.ends && engine.activeCount() == 0 && !renderer.active(client.id),
+            "check-page flow has no failures and ends every camera");
+    }
+
     private static void templates() throws Exception {
         Path dir = Files.createTempDirectory(root, "templates-"), layouts = dir.resolve("layouts");
         Files.createDirectories(layouts);
@@ -1992,8 +2315,37 @@ public final class MenuChecks {
         rejects(() -> parse("id: test\nstate: {name: x}\nvariables: {name: {type: papi, source: '%player_name%'}}\nfrontend: {}"),
             "a state key shadowed by another variable is rejected");
         parse("id: test\nstate: {size: '1'}\nvariables: {size: {type: state, source: size}}\nfrontend: {}");
-        rejects(() -> parse("id: test\nforms: {f: {fields: {a: {label: A, max-length: 500}}}}\nfrontend: {}"),
-            "form max-length is 1..128 like DialogMenu");
+        rejects(() -> parse("id: test\nforms: {f: {fields: {a: {label: A, max-length: 257}}}}\nfrontend: {}"),
+            "form max-length is 1..256");
+        parse("id: test\nforms: {f: {fields: {a: {label: A, max-length: 256}}}}\nfrontend: {}");
+        int lastWidth = 0, lastLines = -1, lastHeight = 20;
+        for (int limit = 1; limit <= MenuEngine.MAX_INPUT; limit++) {
+            var box = new MenuEngine.Input("k", "K", "", limit);
+            int height = box.multiline() ? box.height() : 20;
+            check(box.width() >= lastWidth && box.width() >= 80 && box.width() <= MenuEngine.INPUT_WIDTH
+                    && height >= lastHeight && height <= 512 && box.multiline() == (limit > MenuEngine.SINGLE_LINE_INPUT),
+                "input boxes never shrink as the limit grows and stay inside the client's bounds: " + limit);
+            check(box.lines() >= lastLines || lastLines <= 0, "rows only grow: " + limit);
+            lastWidth = box.width(); lastLines = box.lines(); lastHeight = height;
+        }
+        check(new MenuEngine.Input("k", "K", "", 8).width() < new MenuEngine.Input("k", "K", "", 24).width()
+                && new MenuEngine.Input("k", "K", "", 32).width() == 300 && !new MenuEngine.Input("k", "K", "", 48).multiline()
+                && new MenuEngine.Input("k", "K", "", 49).lines() == 2
+                && new MenuEngine.Input("k", "K", "", 64).lines() == 2 && new MenuEngine.Input("k", "K", "", 128).lines() == 4
+                && new MenuEngine.Input("k", "K", "", 200).lines() == 7 && new MenuEngine.Input("k", "K", "", 256).lines() == 8
+                && new MenuEngine.Input("k", "K", "", 256).height() == 80,
+            "a larger limit gives a larger box: single lines widen to 300, then 2..8 rows");
+        var formOnly = parse("""
+            id: test
+            state: {s: ''}
+            variables:
+              raw: {type: skript, source: 'x::{uuid}', fallback: ''}
+              head: {type: literal, source: 'H'}
+            forms: {f: {title: '{head}', fields: {s: {label: S, initial: '{raw}', max-length: 200}}}}
+            frontend: {b: {type: button, content: x, actions: 'form: f'}}
+            """).get("test");
+        check(formOnly.variables().containsKey("raw") && formOnly.variables().containsKey("head"),
+            "variables used only by a form's title or initial value are still evaluated");
         Client client = new Client();
         Owner owner = new Owner();
         Host host = new Host();
@@ -2016,8 +2368,8 @@ public final class MenuChecks {
         engine.click(client.player, clickAt(menuBody, 100, 60));
         var first = host.forms.getLast();
         check(first.title().equals("改名") && first.submit().equals("保存") && first.cancel().equals("返回")
-                && first.inputs().equals(List.of(new MenuEngine.Input("name", "名字", "无", 4, false),
-                    new MenuEngine.Input("city", "城市", "", 64, true))),
+                && first.inputs().equals(List.of(new MenuEngine.Input("name", "名字", "无", 4),
+                    new MenuEngine.Input("city", "城市", "", 64))),
             "a form shows every field with expanded label, initial value and limit");
         check(host.ends == ends && host.hides == hides && host.corners.size() == shows && engine.stamp(client.id) != null
                 && sent.stream().noneMatch(WrapperPlayServerDestroyEntities.class::isInstance),
@@ -2033,6 +2385,28 @@ public final class MenuChecks {
         check(shown.apply("N=阿明 C=北京 [已保存 阿明/北京]") && sent.stream().noneMatch(WrapperPlayServerSpawnEntity.class::isInstance),
             "answers land in state, the menu's Dialog returns, displays update in place and the rest of the chain runs");
         engine.click(client.player, clickAt(host.body(client.id), 100, 60));
+        host.papi.put("pa_b", "LEAK");
+        sent.clear();
+        host.submit(Map.of("name", "%{x}", "city", "%pa_b%{name}100%"));
+        check(shown.apply("N=%{x} C=%pa_b%{name}100% [已保存 %{x}/%pa_b%{name}100%]") && !shown.apply("LEAK"),
+            "typed % and {name} show as typed: values are never expanded as placeholders or tokens");
+        engine.click(client.player, clickAt(host.body(client.id), 100, 60));
+        check(host.forms.getLast().inputs().getFirst().initial().equals("%{x}"),
+            "an initial value holding % and braces comes back unchanged");
+        client.op = true;
+        sent.clear();
+        host.submit(Map.of("name", "无", "city", "%pa_b%"));
+        check(shown.apply("C=LEAK"), "an operator's typed %placeholder% still expands");
+        client.op = false;
+        engine.click(client.player, clickAt(host.body(client.id), 100, 60));
+        sent.clear();
+        host.submit(Map.of("name", "无", "city", "%pa_b%"));
+        check(shown.apply("C=%pa_b%") && !shown.apply("C=LEAK"),
+            "the same text typed without operator rights stays literal, replacing the operator's trust");
+        engine.click(client.player, clickAt(host.body(client.id), 100, 60));
+        engine.click(client.player, clickAt(host.body(client.id), 100, 60));
+        host.submit(Map.of("name", "阿明", "city", "北京"));
+        engine.click(client.player, clickAt(host.body(client.id), 100, 60));
         check(host.forms.getLast().inputs().getFirst().initial().equals("阿明"), "initial values expand from state");
         var stale = host.submitted;
         int beforeCancel = host.corners.size();
@@ -2044,8 +2418,8 @@ public final class MenuChecks {
         check(host.corners.size() == beforeCancel + 1 && !shown.apply("晚到"), "answers of a finished form are ignored");
         List<Map<String, String>> answers = new ArrayList<>();
         handle.openForm("api", answers::add);
-        check(!host.forms.getLast().inputs().getFirst().large() && host.forms.getLast().inputs().getLast().large(),
-            "long limits get the large box");
+        check(!host.forms.getLast().inputs().getFirst().multiline() && host.forms.getLast().inputs().getLast().lines() == 4,
+            "long limits get a multi-line box sized by the limit");
         host.submit(Map.of("member", "Bob", "note", "第一行\n第二行"));
         check(answers.equals(List.of(Map.of("member", "Bob", "note", "第一行 第二行"))),
             "API forms hand every field to the callback; line breaks become spaces");
@@ -2065,7 +2439,7 @@ public final class MenuChecks {
         check(host.errors.isEmpty(), "form sessions report no failures");
     }
 
-    /** DialogMenu close-with-escape on corner-× pages: Esc closes the Dialog, the menu follows once the player turns. */
+    /** close-with-escape on corner-× pages: Esc closes the Dialog, the menu follows at the next newly pressed movement key. */
     private static void escapes() throws Exception {
         Path dir = Files.createTempDirectory(root, "escapes-"), layouts = dir.resolve("layouts");
         Files.createDirectories(layouts);
@@ -2103,6 +2477,12 @@ public final class MenuChecks {
             "a page and file without close-with-escape follow the server setting");
         check(LumaMenuPlugin.readSettings(new org.bukkit.configuration.file.YamlConfiguration()).closeWithEscape(),
             "the server setting close-with-escape defaults to true");
+        var defaults = LumaMenuPlugin.readSettings(new org.bukkit.configuration.file.YamlConfiguration());
+        check(defaults.hideExperienceBar() && !defaults.replaceCrosshair(),
+            "the experience bar is hidden by default; the crosshair is only replaced on request");
+        var hudOff = new org.bukkit.configuration.file.YamlConfiguration();
+        hudOff.set("hide-experience-bar", "yes");
+        rejects(() -> LumaMenuPlugin.readSettings(hudOff), "hide-experience-bar needs true/false");
         rejects(() -> parse("id: test\nclose-with-escape: yes please\nfrontend: {}"), "close-with-escape needs true/false");
         Client client = new Client();
         Owner owner = new Owner();
@@ -2116,30 +2496,42 @@ public final class MenuChecks {
             new RenderPreferences(dir.resolve("render-modes.properties")));
         var handle = engine.open(owner.plugin, client.player, "esc", Map.of(), a -> {}, c -> {});
         check(host.escapes.getLast(), "the Dialog of an Esc page may be closed with Esc");
-        for (int i = 0; i < MenuEngine.ESCAPE_GRACE_TICKS; i++) {
-            client.eye.setYaw(client.eye.getYaw() + 3);
-            engine.tick();
-        }
-        check(handle.active(), "late rotation right after showing only moves the baseline");
-        client.eye.setYaw(client.eye.getYaw() + .5f);
+        engine.input(client.player, keys("F"));
+        engine.input(client.player, keys(""));
+        for (int i = 0; i < MenuEngine.ESCAPE_GRACE_TICKS; i++) engine.tick();
+        check(handle.active(), "keys pressed or released right after showing only move the baseline");
+        client.eye.setYaw(client.eye.getYaw() + 40);
         engine.tick();
-        check(handle.active(), "turning less than the limit keeps the menu");
-        client.eye.setPitch(client.eye.getPitch() + 4);
-        engine.tick();
+        check(handle.active(), "turning alone never closes (the camera rig stops rotation reports anyway)");
+        engine.input(client.player, keys("P"));
+        engine.input(client.player, keys(""));
+        check(handle.active(), "sprint alone and released keys keep the menu");
+        engine.input(client.player, keys("J"));
         check(!handle.active() && host.closedEvents.getLast().equals("esc:CLOSED"),
-            "turning after the grace means Esc closed the Dialog: the menu closes too");
+            "a newly pressed movement key after the grace means Esc closed the Dialog: the menu closes too");
+        client.input = keys("S");
+        var held = engine.open(owner.plugin, client.player, "esc", Map.of(), a -> {}, c -> {});
+        for (int i = 0; i < MenuEngine.ESCAPE_GRACE_TICKS; i++) engine.tick();
+        engine.input(client.player, keys("S"));
+        check(held.active(), "a key already held (toggled sneak) when the menu opened is not a new press");
+        engine.input(client.player, keys("SF"));
+        check(!held.active(), "another key pressed on top of it closes");
+        client.input = null;
         var plain = engine.open(owner.plugin, client.player, "plain", Map.of(), a -> {}, c -> {});
         check(!host.escapes.getLast(), "pages with close-with-escape: false keep Esc off");
-        for (int i = 0; i < 10; i++) { client.eye.setYaw(client.eye.getYaw() + 20); engine.tick(); }
-        check(plain.active(), "without close-with-escape turning never closes the menu");
+        for (int i = 0; i < 10; i++) engine.tick();
+        engine.input(client.player, keys("FJ"));
+        check(plain.active(), "without close-with-escape keys never close the menu");
         engine.close(client.player);
         engine.open(owner.plugin, client.player, "unset", Map.of(), x -> {}, c -> {});
         check(host.escapes.getLast(), "by default (server setting true) an unset page allows Esc");
         engine.close(client.player);
         host.corner = true;
         var nativePage = engine.open(owner.plugin, client.player, "native", Map.of(), a -> {}, c -> {});
-        for (int i = 0; i < 10; i++) { client.eye.setYaw(client.eye.getYaw() + 20); engine.tick(); }
-        check(nativePage.active(), "native close pages report Esc themselves, turning does not close them");
+        for (int i = 0; i < 10; i++) engine.tick();
+        engine.input(client.player, keys(""));
+        engine.input(client.player, keys("F"));
+        check(nativePage.active(), "native close pages report Esc themselves, keys do not close them");
         check(engine.openPage(client.player, "esc") && engine.session(client.player) != null
                 && "esc".equals(engine.page(client.player)) && host.closedSessions.getLast().equals(nativePage.id()),
             "scripts open pages by ID and read the session token; closed events carry the ended session");
@@ -2152,10 +2544,11 @@ public final class MenuChecks {
         int shows = host.corners.size();
         owned.suspend();
         check(engine.stamp(client.id) == null && owned.active(), "suspend keeps the session but drops the stamp and clicks");
-        client.eye.setYaw(client.eye.getYaw() + 30);
+        engine.input(client.player, keys(""));
+        engine.input(client.player, keys("F"));
         engine.tick();
         owned.update(Map.of("x", "1"));
-        check(owned.active() && host.corners.size() == shows, "while suspended turning does not close and updates wait");
+        check(owned.active() && host.corners.size() == shows, "while suspended keys do not close and updates wait");
         owned.resume();
         check(host.corners.size() == shows + 1 && engine.stamp(client.id) != null, "resume shows the menu's Dialog again");
         check(host.errors.isEmpty(), "Esc sessions report no failures");
@@ -2381,14 +2774,46 @@ public final class MenuChecks {
             && host.messages.stream().filter("open b"::equals).count() == 1, "refresh re-presents without firing open events");
         click.accept(100, 50);
         check("a".equals(handle.page()), "back returns to the previous page");
+        int hidesBefore = host.hides;
         click.accept(300, 120);
-        check(!handle.active() && host.consoles.equals(List.of("say Offline")) && host.messages.getLast().equals("close a")
+        check(handle.active() && host.consoles.equals(List.of("say Offline")) && host.hides == hidesBefore,
+            "console runs while the menu is still up");
+        click.accept(100, 155);
+        check("a".equals(handle.page()), "no clicks once the menu is closing");
+        host.runLater();
+        check(!handle.active() && host.messages.getLast().equals("close a") && host.hides == hidesBefore + 1
             && host.closedEvents.getLast().equals("a:CLOSED") && closed.getLast().reason() == LumaMenuApi.Reason.CLOSED,
-            "console closes first, then runs; close event and Bukkit event fire");
+            "console closes the menu a moment later; close event and Bukkit event fire");
         check(engine.page(client.player) == null && !engine.refresh(client.player), "closed menus report no page");
         var second = open.get();
         click.accept(100, 120);
-        check(!second.active() && host.commands.getLast().equals("spawn"), "command closes the menu before the player runs it");
+        check(second.active() && host.commands.getLast().equals("spawn"), "command runs before the menu closes");
+        host.runLater();
+        check(!second.active() && closed.getLast().reason() == LumaMenuApi.Reason.CLOSED,
+            "a command that opens no LumaMenu closes it after the grace ticks");
+        // A command opening another LumaMenu takes the session over: no close, no camera/HUD restart.
+        int begins = host.begins, ends = host.ends, hides = host.hides;
+        List<LumaMenuApi.Closed> later = new ArrayList<>();
+        LumaMenuApi.Handle[] opened = new LumaMenuApi.Handle[1];
+        host.onCommand = command -> opened[0] = engine.open(owner.plugin, client.player, "b", Map.of(), a -> {}, later::add);
+        var fourth = open.get();
+        fourth.open("b");
+        fourth.back();
+        click.accept(100, 120);
+        host.onCommand = command -> {};
+        check(!fourth.active() && opened[0].active() && "b".equals(opened[0].page()) && renderer.active(client.id)
+            && host.begins == begins + 1 && host.ends == ends && host.hides == hides
+            && closed.getLast().reason() == LumaMenuApi.Reason.REPLACED && host.closedEvents.getLast().equals("a:REPLACED"),
+            "a command that opens a LumaMenu hands the open menu over without closing it");
+        host.runLater();
+        check(opened[0].active() && host.ends == ends, "the takeover cancels the pending close");
+        check(opened[0].back() && "a".equals(opened[0].page()) && opened[0].active(),
+            "same owner and file: back returns to the page the command was clicked on");
+        Owner stranger = new Owner();
+        var foreign = engine.open(stranger.plugin, client.player, "a", Map.of(), a -> {}, c -> {});
+        check(!opened[0].active() && later.getLast().reason() == LumaMenuApi.Reason.REPLACED
+            && host.begins == begins + 1 && host.ends == ends && !foreign.back() && !foreign.active() && host.ends == ends + 1,
+            "another owner takes over without the old history; its back closes the menu");
         var third = open.get();
         click.accept(100, 50);
         third.close();
@@ -2567,6 +2992,18 @@ public final class MenuChecks {
             "fault control: the raw server pitch 10.3 is not what the client camera uses (9.84375)");
         near(DisplayRenderer.Camera.of(new org.bukkit.Location(null, 0, 0, 0, 0, 0), true).rider(1).z,
             DisplayRenderer.RIDER_ABOVE_EYE, "looked-down pages use the client's 90 degree pitch, not the server pitch");
+        World netherWorld = (World) Proxy.newProxyInstance(MenuChecks.class.getClassLoader(), new Class[]{World.class},
+            (proxy, method, args) -> method.getName().equals("getEnvironment") ? World.Environment.NETHER : null);
+        var netherLook = DisplayRenderer.Look.of(new org.bukkit.Location(netherWorld, 0, 0, 0, 123, -20), true);
+        var downLook = DisplayRenderer.Look.of(new org.bukkit.Location(null, 0, 0, 0, 123, -20), true);
+        check(netherLook.equals(DisplayRenderer.Look.NETHER) && downLook.equals(new DisplayRenderer.Look(123, 90))
+            && DisplayRenderer.Look.of(new org.bukkit.Location(netherWorld, 0, 0, 0, 123, -20), false).pitch()
+                == DisplayRenderer.sentPitch(-20),
+            "looked-down pages face the Nether light in the Nether and straight down elsewhere, keeping the yaw there");
+        var towardEye = SheetChecks.billboard(netherLook.yaw(), netherLook.pitch()).transform(new org.joml.Vector3f(0, 0, 1));
+        check(SheetChecks.light(towardEye, true) > .9999 && SheetChecks.light(
+                SheetChecks.billboard(37, 0).transform(new org.joml.Vector3f(0, 0, 1)), true) < .95,
+            "a sheet facing the Nether rig is fully lit; a level Nether view is not");
         check(Arrays.equals(DisplayRenderer.compose(new int[]{7, -5, 9}, new int[]{-5, -6}), new int[]{7, 9, -5, -6}),
             "passenger merge keeps vanilla riders once and appends menu displays");
         Client first = new Client(), second = new Client();
@@ -2596,7 +3033,10 @@ public final class MenuChecks {
                     "foot link reaches down to the feet; camera link's eye height equals the viewer's");
                 continue;
             }
-            check(value(data, 16).equals((15 << 4) | (15 << 20)), "full sky/block brightness on every display");
+            int index = spawns.stream().map(WrapperPlayServerSpawnEntity::getEntityId).toList().indexOf(metadata.getEntityId());
+            var shown = prepared.get(index);
+            check(value(data, 16).equals((15 << 4) | (15 << 20)),
+                "full sky/block brightness on every compatible display: no shader marker in compatible mode");
             check(value(data, 15).equals((byte) 3), "camera-centered billboard");
         }
         var cameraSpawn = rig.getLast();
@@ -2792,6 +3232,62 @@ public final class MenuChecks {
         } finally { ByteBufHelper.release(buffer); packet.setBuffer(null); }
     }
 
+    /** Experience bar hidden by a creative-told client; the HUD crosshair cut out of action bars while a menu is open. */
+    private static void clientHud() throws Exception {
+        Client client = new Client();
+        List<PacketWrapper<?>> packets = new ArrayList<>();
+        ClientHud hud = new ClientHud((p, packet) -> { serialize(packet); packets.add(packet); });
+        check(!hud.menu(client.id) && !hud.creative(client.id), "players without a menu skip action bar decoding");
+        hud.begin(client.player, true);
+        check(hud.menu(client.id) && hud.creative(client.id) && packets.size() == 1
+            && packets.getFirst() instanceof WrapperPlayServerChangeGameState change
+            && change.getReason() == WrapperPlayServerChangeGameState.Reason.CHANGE_GAME_MODE && change.getValue() == 1f,
+            "a survival player's client alone is told creative, which draws no experience bar");
+        hud.end(client.player);
+        check(!hud.menu(client.id) && !hud.creative(client.id) && packets.size() == 2
+            && ((WrapperPlayServerChangeGameState) packets.get(1)).getValue() == 0f && client.abilityUpdates == 1,
+            "closing sends the real game mode and the server's abilities again");
+        hud.end(client.player);
+        check(packets.size() == 2 && client.abilityUpdates == 1, "a closed HUD is not restored twice");
+        client.mode = org.bukkit.GameMode.ADVENTURE;
+        hud.begin(client.player, true);
+        hud.end(client.player);
+        check(packets.size() == 4 && ((WrapperPlayServerChangeGameState) packets.get(3)).getValue() == 2f,
+            "adventure players get adventure back");
+        for (org.bukkit.GameMode mode : List.of(org.bukkit.GameMode.CREATIVE, org.bukkit.GameMode.SPECTATOR)) {
+            client.mode = mode;
+            hud.begin(client.player, true);
+            check(hud.menu(client.id) && !hud.creative(client.id) && packets.size() == 4,
+                mode + " players already have no experience bar and are left alone");
+            hud.end(client.player);
+        }
+        client.mode = org.bukkit.GameMode.SURVIVAL;
+        hud.begin(client.player, false);
+        check(hud.menu(client.id) && !hud.creative(client.id) && packets.size() == 4,
+            "hide-experience-bar: false sends no game mode, the crosshair is still cut");
+        hud.forget(client.id);
+        check(!hud.menu(client.id), "quitting forgets the HUD state");
+        ClientHud broken = new ClientHud((p, packet) -> { throw new IllegalStateException("send failed"); });
+        rejects(() -> broken.begin(client.player, true), "game mode send failures are visible");
+        check(!broken.creative(client.id), "a failed creative switch is not restored later");
+        for (var mode : org.bukkit.GameMode.values())
+            serialize(ClientHud.gameMode(mode));
+
+        Component cross = Component.text(ClientHud.CROSSHAIR, net.kyori.adventure.text.format.TextColor.color(ClientHud.CROSSHAIR_COLOR))
+            .font(ClientHud.CROSSHAIR_FONT);
+        Component bar = Component.text("HUD ").append(cross).append(Component.text("100"));
+        Component stripped = ClientHud.withoutCrosshair(bar);
+        check(PlainTextComponentSerializer.plainText().serialize(stripped).equals("HUD 100")
+            && stripped.children().getFirst().font().equals(ClientHud.CROSSHAIR_FONT),
+            "the crosshair text goes, its style and the rest of the action bar stay");
+        Component nested = Component.text().font(ClientHud.CROSSHAIR_FONT)
+            .append(Component.text(ClientHud.CROSSHAIR)).append(Component.text("x").font(Key.key("minecraft", "default"))).build();
+        check(PlainTextComponentSerializer.plainText().serialize(ClientHud.withoutCrosshair(nested)).equals("x"),
+            "text inheriting the crosshair font goes too; a child with another font stays");
+        Component plain = Component.text("a").append(Component.text("\uE000").font(Key.key("other", "font")));
+        check(ClientHud.withoutCrosshair(plain) == plain, "action bars without the crosshair font are not re-encoded");
+    }
+
     private static void clientInventory() throws Exception {
         Client client = new Client();
         List<PacketWrapper<?>> packets = new ArrayList<>();
@@ -2842,7 +3338,19 @@ public final class MenuChecks {
         var calibration = new Calibration.Store(dir.resolve("calibration.properties"));
         calibration.save(client.id, MAPPING);
         var cache = new MenuCache(dir.resolve("compiled.json.gz"));
-        cache.save(MenuCache.compile(demo(), calibration.all(), 2));
+        var downYaml = new YamlConfiguration();
+        downYaml.loadFromString("""
+            schema-version: 3
+            id: down
+            look-down: true
+            frontend:
+              gem: {type: item, source: 'minecraft:diamond', width: 30, height: 30, offset: {x: 100, y: 80}}
+              stone: {type: block, source: 'minecraft:stone', width: 30, height: 30, offset: {x: 200, y: 80}, rotation: {x: 20, y: 30}}
+              label: {type: text, content: down, offset: {x: 226, y: 150}}
+            """);
+        var downPages = new LinkedHashMap<>(demo());
+        downPages.putAll(Layouts.parse("down", downYaml));
+        cache.save(MenuCache.compile(downPages, calibration.all(), 2));
         var preferences = new RenderPreferences(dir.resolve("render-modes.properties"));
         Owner owner = new Owner();
         Host host = new Host();
@@ -2850,18 +3358,18 @@ public final class MenuChecks {
         List<PacketWrapper<?>> packets = new ArrayList<>();
         var renderer = displays((p, packet) -> { serialize(packet); packets.add(packet); });
         var engine = new MenuEngine(owner.plugin, host, renderer, calibration, cache, cache.read(), preferences);
-        var handle = engine.open(owner.plugin, client.player, "demo", Map.of(), a -> {}, c -> {});
-        var prepared = cache.read().prepared(MAPPING, "demo", RenderMode.COMPATIBLE, true);
+        var handle = engine.open(owner.plugin, client.player, "down", Map.of(), a -> {}, c -> {});
+        var prepared = cache.read().prepared(MAPPING, "down", RenderMode.COMPATIBLE, true);
         check(host.looks.equals(List.of(true)), "compatible look-down page requests the downward view");
-        var plainDemo = cache.read().prepared(MAPPING, "demo", RenderMode.COMPATIBLE, false);
+        var plainDemo = cache.read().prepared(MAPPING, "down", RenderMode.COMPATIBLE, false);
         int model = 0;
         while (!Set.of("item", "block").contains(prepared.get(model).visual().kind())) model++;
         var sentScale = (com.github.retrooper.packetevents.util.Vector3f) packets.stream()
             .filter(WrapperPlayServerEntityMetadata.class::isInstance).map(WrapperPlayServerEntityMetadata.class::cast)
             .skip(model).findFirst().orElseThrow().getEntityMetadata().stream()
             .filter(d -> d.getIndex() == 12).findFirst().orElseThrow().getValue();
-        check(sentScale.getZ() == prepared.get(model).sz() && prepared.get(model).sz() != plainDemo.get(model).sz(),
-            "looked-down models are sent with the cached steered matrix");
+        check(sentScale.getZ() == prepared.get(model).sz() && prepared.equals(plainDemo),
+            "looked-down models are the same flattened sheets as on level pages");
         var sentMetadata = packets.stream().filter(WrapperPlayServerEntityMetadata.class::isInstance)
             .map(WrapperPlayServerEntityMetadata.class::cast).toList();
         for (int i = 0; i < prepared.size(); i++) {
@@ -2903,7 +3411,7 @@ public final class MenuChecks {
             .map(WrapperPlayServerEntityMetadata.class::cast).findFirst().orElseThrow();
         var detailFirst = cache.read().prepared(MAPPING, "detail", RenderMode.COMPATIBLE).getFirst();
         near(viewOrigin(refused, client.eye, false).distance(expectedOrigin(detailFirst)), 0,
-            "a refused look-down (nether) renders at the real pitch");
+            "a refused look-down renders at the real pitch");
         int ends = host.ends;
         engine.close(client.player);
         check(host.ends == ends + 1, "closing always runs the host restore path");
@@ -3203,6 +3711,7 @@ public final class MenuChecks {
     private static void resources() throws Exception {
         Path evidence = Path.of("build/native-evidence");
         MenuResources.write(evidence.resolve("pack"), true);
+        MenuResources.write(evidence.resolve("crosshair-pack"), true, true, ImageCatalog.EMPTY, List.of());
         Path zip = MenuResources.export(root.resolve("export"), true);
         try (ZipFile archive = new ZipFile(zip.toFile())) {
             check(archive.getEntry("pack.mcmeta") != null && archive.getEntry("assets/lumamenu/items/target.json") != null
@@ -3279,6 +3788,40 @@ public final class MenuChecks {
             check(archive.stream().noneMatch(e -> e.getName().contains("warning_button")),
                 "disabling hide-warning removes overrides rather than leaving stale textures");
         }
+        try (ZipFile archive = new ZipFile(zip.toFile())) {
+            check(archive.getEntry("assets/minecraft/textures/gui/sprites/hud/crosshair.png") == null,
+                "the vanilla crosshair is kept unless replace-crosshair is on");
+            JsonObject font = JsonParser.parseString(new String(archive.getInputStream(
+                archive.getEntry("assets/lumamenu/font/crosshair.json")).readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+            var providers = font.getAsJsonArray("providers");
+            check(providers.size() == 1 && providers.get(0).getAsJsonObject().get("type").getAsString().equals("space")
+                && providers.get(0).getAsJsonObject().getAsJsonObject("advances").entrySet().stream()
+                    .allMatch(e -> e.getValue().getAsInt() == 0)
+                && providers.get(0).getAsJsonObject().getAsJsonObject("advances").size() == 2,
+                "without replace-crosshair the HUD crosshair is invisible and zero-wide");
+            String shader = new String(archive.getInputStream(archive.getEntry("assets/minecraft/shaders/core/text.vsh")).readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+            int color = ClientHud.CROSSHAIR_COLOR;
+            check(shader.contains("ivec3(" + (color >> 16) + ", " + (color >> 8 & 255) + ", " + (color & 255) + ")")
+                && shader.contains("ivec3(" + (color >> 16) / 4 + ", " + (color >> 8 & 255) / 4 + ", " + (color & 255) / 4 + ")"),
+                "the GUI text shader recognises the crosshair colour and its shadow");
+        }
+        MenuResources.export(root.resolve("export"), true, true, ImageCatalog.EMPTY, List.of());
+        try (ZipFile archive = new ZipFile(zip.toFile())) {
+            var hidden = ImageIO.read(archive.getInputStream(archive.getEntry("assets/minecraft/textures/gui/sprites/hud/crosshair.png")));
+            boolean clear = hidden.getWidth() == 15 && hidden.getHeight() == 15;
+            for (int y = 0; y < 15; y++) for (int x = 0; x < 15; x++) clear &= hidden.getRGB(x, y) >>> 24 == 0;
+            check(clear, "replace-crosshair makes the vanilla crosshair a transparent 15x15 sprite");
+            String font = new String(archive.getInputStream(archive.getEntry("assets/lumamenu/font/crosshair.json")).readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+            check(font.contains("lumamenu:crosshair/glyph.png") && font.contains("-13"),
+                "the replaced font has the 15x15 glyph and steps back its 13 advance (plus ends at column 11)");
+            var glyph = ImageIO.read(archive.getInputStream(archive.getEntry("assets/lumamenu/textures/crosshair/glyph.png")));
+            check(glyph.getWidth() == 15 && glyph.getHeight() == 15 && glyph.getRGB(7, 3) == 0xD9EBEBEB
+                && glyph.getRGB(3, 7) == 0xD9EBEBEB && glyph.getRGB(11, 7) == 0xD9EBEBEB && glyph.getRGB(7, 2) == 0
+                && glyph.getRGB(6, 6) == 0, "the glyph is the vanilla 9x9 plus at (3, 3), light grey at 85%, no rim");
+        }
+        MenuResources.export(root.resolve("export"), true);
     }
 
     private static String identifier(ClickEvent event) { return ((ClickEvent.Payload.Custom) event.payload()).key().value(); }
@@ -3505,10 +4048,11 @@ public final class MenuChecks {
     private static final class Client {
         final UUID id = UUID.randomUUID();
         UUID worldId = UUID.randomUUID();
-        boolean online = true, permitted = true;
-        int inventoryUpdates;
+        boolean online = true, permitted = true, op;
+        int inventoryUpdates, abilityUpdates;
         org.bukkit.GameMode mode = org.bukkit.GameMode.SURVIVAL;
         org.bukkit.Location eye = new org.bukkit.Location(null, 10, 64, 20);
+        org.bukkit.Input input;
         final World world = (World) Proxy.newProxyInstance(getClass().getClassLoader(), new Class[]{World.class},
             (proxy, method, args) -> method.getName().equals("getUID") ? worldId : defaults(method.getReturnType()));
         final Player player = (Player) Proxy.newProxyInstance(getClass().getClassLoader(), new Class[]{Player.class},
@@ -3519,6 +4063,7 @@ public final class MenuChecks {
                 case "getLocation" -> eye.clone();
                 case "isOnline" -> online;
                 case "hasPermission" -> permitted;
+                case "isOp" -> op;
                 case "getName" -> "Offline";
                 case "getEntityId" -> 4321;
                 case "getGameMode" -> mode;
@@ -3526,6 +4071,22 @@ public final class MenuChecks {
                 case "getFlySpeed" -> .1f;
                 case "getWalkSpeed" -> .2f;
                 case "updateInventory" -> { inventoryUpdates++; yield null; }
+                case "setFlySpeed" -> { abilityUpdates++; yield null; }
+                case "getCurrentInput" -> input;
+                default -> defaults(method.getReturnType());
+            });
+    }
+    /** Client key state; letters F B L R J S (sneak) and P (sprint) mark pressed keys. */
+    private static org.bukkit.Input keys(String pressed) {
+        return (org.bukkit.Input) Proxy.newProxyInstance(MenuChecks.class.getClassLoader(), new Class[]{org.bukkit.Input.class},
+            (proxy, method, args) -> switch (method.getName()) {
+                case "isForward" -> pressed.contains("F");
+                case "isBackward" -> pressed.contains("B");
+                case "isLeft" -> pressed.contains("L");
+                case "isRight" -> pressed.contains("R");
+                case "isJump" -> pressed.contains("J");
+                case "isSneak" -> pressed.contains("S");
+                case "isSprint" -> pressed.contains("P");
                 default -> defaults(method.getReturnType());
             });
     }
@@ -3551,8 +4112,9 @@ public final class MenuChecks {
         final Map<UUID, ClickEvent> exits = new HashMap<>();
         final Map<UUID, Integer> bodyWidths = new HashMap<>();
         final List<Throwable> errors = new ArrayList<>();
-        int hides, begins, ends;
+        int hides, begins, ends, clicks = 3;
         boolean corner = true, failShow, lookAllowed;
+        public int calibrationClicks() { return clicks; }
         final List<Boolean> looks = new ArrayList<>();
         public boolean cornerClose() { return corner; }
         public void begin(Player player) { begins++; }
@@ -3576,8 +4138,19 @@ public final class MenuChecks {
         }
         public void hide(Player player) { hides++; bodies.remove(player.getUniqueId()); }
         public void message(Player player, String text) { messages.add(text); }
-        public void command(Player player, String command) { commands.add(command); }
+        /** Runs inside {@link #command}, e.g. a script opening another menu. */
+        java.util.function.Consumer<String> onCommand = command -> {};
+        public void command(Player player, String command) { commands.add(command); onCommand.accept(command); }
         public void console(String command) { consoles.add(command); }
+        final List<MenuEngine.PresetView> presetViews = new ArrayList<>();
+        final List<Consumer<MenuEngine.PresetChoice>> presetChoices = new ArrayList<>();
+        public void presets(Player player, MenuEngine.PresetView view, Consumer<MenuEngine.PresetChoice> chosen) {
+            presetViews.add(view);
+            presetChoices.add(chosen);
+        }
+        void choose(MenuEngine.PresetAction action, int index) {
+            presetChoices.getLast().accept(new MenuEngine.PresetChoice(action, index));
+        }
         public void sound(Player player, String sound) { sounds.add(sound); }
         /** Deterministic scheduler: {@link #runLater} fires everything pending, cancelled tasks never fire. */
         public Runnable later(Runnable task, long ticks) {
@@ -3592,13 +4165,23 @@ public final class MenuChecks {
             closedEvents.add(page + ":" + reason);
         }
         public void failure(Throwable error) { errors.add(error); }
-        /** PlaceholderAPI stand-in: each known %key% is replaced; untouched text means no placeholder. */
+        /**
+         * PlaceholderAPI stand-in scanning left to right like its CharsReplacer: each %…% pair is one candidate, a
+         * known key is replaced, anything else (including an empty %%) is kept; untouched text means no placeholder.
+         */
         final Map<String, String> papi = new HashMap<>();
         final Map<String, Object> skript = new HashMap<>();
         public String placeholders(Player player, String text) {
-            String result = text;
-            for (var entry : papi.entrySet()) result = result.replace("%" + entry.getKey() + "%", entry.getValue());
-            return result.equals(text) ? null : result;
+            StringBuilder result = new StringBuilder();
+            int i = 0;
+            while (i < text.length()) {
+                int open = text.indexOf('%', i), close = open < 0 ? -1 : text.indexOf('%', open + 1);
+                if (close < 0) { result.append(text, i, text.length()); break; }
+                String key = text.substring(open + 1, close);
+                result.append(text, i, open).append(papi.containsKey(key) ? papi.get(key) : "%" + key + "%");
+                i = close + 1;
+            }
+            return result.toString().equals(text) ? null : result.toString();
         }
         public Object skript(String name) { return skript.get(name); }
         final List<String> calls = new ArrayList<>();

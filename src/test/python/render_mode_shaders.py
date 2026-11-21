@@ -82,7 +82,8 @@ def stage(name, ext, defines, vanilla=False, fault=None, capture=False):
         text = text.replace("void main() {", "out vec4 lumaProbe;\nvoid main() {")
         end = text.rfind("}")
         text = text[:end] + "\n    lumaProbe = gl_Position;\n" + text[end:]
-    text = expand(text, vanilla).replace("#version 330", "#version 430")
+    # The pack targets shaderc/SPIR-V (gl_VertexIndex); this OpenGL harness spells it gl_VertexID.
+    text = expand(text, vanilla).replace("#version 330", "#version 430").replace("gl_VertexIndex", "gl_VertexID")
     offset = text.index("\n") + 1
     while text[offset:].startswith("#extension"):
         offset = text.index("\n", offset) + 1
@@ -235,8 +236,131 @@ def raster_checks():
     return checks
 
 
+def rotation(ax, ay):
+    """Quaternionf.rotationXYZ(ax, ay, 0) as rows: ItemTransform's GUI rotation."""
+    cx, sx, cy, sy = math.cos(ax), math.sin(ax), math.cos(ay), math.sin(ay)
+    rx = ((1, 0, 0), (0, cx, -sx), (0, sx, cx))
+    ry = ((cy, 0, sy), (0, 1, 0), (-sy, 0, cy))
+    return tuple(tuple(sum(rx[i][k] * ry[k][j] for k in range(3)) for j in range(3)) for i in range(3))
+
+
+def apply(m, v):
+    return tuple(sum(m[i][k] * v[k] for k in range(3)) for i in range(3))
+
+
+def inventory_light(normal):
+    """Vanilla inventory: Lighting.ITEMS_3D in y-up view space, light.glsl power 0.6 and ambient 0.4."""
+    def unit(v):
+        length = math.sqrt(sum(x * x for x in v))
+        return tuple(x / length for x in v)
+
+    def ry(a):
+        return ((math.cos(a), 0, math.sin(a)), (0, 1, 0), (-math.sin(a), 0, math.cos(a)))
+
+    def rx(a):
+        return ((1, 0, 0), (0, math.cos(a), -math.sin(a)), (0, math.sin(a), math.cos(a)))
+
+    def mul(a, b):
+        return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)) for i in range(3))
+    # scaling(1,-1,1).rotateYXZ(...) lights meet GUI normals that the pose's scale(16,-16,16) flipped the same way.
+    lights = mul(mul(ry(1.0821041), rx(3.2375858)), mul(ry(-0.3926991), rx(2.3561945)))
+    total = sum(max(0, sum(a * b for a, b in zip(apply(lights, unit(d)), normal)))
+                for d in ((.2, 1, -.7), (-.2, 1, .7)))
+    return min(1, total * .6 + .4)
+
+
+def lighting_raster():
+    """Inventory-pose block faces through the pack's item/entity shaders: enhanced lit like the inventory, others untouched."""
+    from PIL import Image
+    size = 96
+    white = CTX.texture((1, 1), 4, bytes([255] * 4))
+    target = CTX.framebuffer([CTX.texture((size, size), 4)])
+    focal = 1 / math.tan(math.radians(70 / 2))
+    near, far = .05, 1000
+    BUFFERS["Projection"].write(array("f", [focal, 0, 0, 0, 0, focal, 0, 0, 0, 0, (far + near) / (far - near), -1,
+                                            0, 0, far * near / (far - near) * 2, 0]))
+    gui = rotation(math.radians(30), math.radians(225))
+    faces = [f for f in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+             if apply(gui, f)[2] > .05]
+    assert len(faces) == 3 and (0, 1, 0) in faces, faces
+    worst = 0
+    cases = 0
+    try:
+        for name, defines in (("item", ""), ("entity", ""), ("entity", "#define PER_FACE_LIGHTING\n")):
+            shader = CTX.program(vertex_shader=stage(name, "vsh", defines), fragment_shader=stage(name, "fsh", defines))
+            for binding, (key, buffer) in enumerate(BUFFERS.items()):
+                if key in shader:
+                    shader[key].binding = binding
+                    buffer.bind_to_uniform_block(binding)
+            for key, unit in (("Sampler0", 0), ("Sampler1", 2), ("Sampler2", 1)):
+                if key in shader:
+                    shader[key].value = unit
+            for mode in ("enhanced", "near", "plain"):
+                white.use(0); LIGHTMAP.use(1); OVERLAY.use(2)
+                target.use()
+                target.clear(0, 0, 0, 1)
+
+                def place(local):
+                    x, y, z = apply(gui, local)
+                    if mode == "enhanced":
+                        return tuple(v * -65536 for v in (x * .3 / focal, y * .3 / focal, z * .3 / focal - 2))
+                    # Compatible mode has no shader path: a near flattened sheet, even with the enhanced lit marker,
+                    # is lit like any world item.
+                    return (x * .03 / focal, y * .03 / focal, -.07 + z * .03 / focal * (.005 if mode == "near" else 1))
+                vertices, normals = [], []
+                for f in faces:
+                    u = (0, 1, 0) if f[0] else (1, 0, 0)
+                    w = (f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0])
+                    corners = [tuple(f[i] * .5 + a * u[i] * .5 + b * w[i] * .5 for i in range(3))
+                               for a, b in ((-1, -1), (1, -1), (1, 1), (-1, -1), (1, 1), (-1, 1))]
+                    vertices += [place(c) for c in corners]
+                    normals += list(apply(gui, f)) * 6
+                count = len(vertices)
+                # DisplayRenderer brightness: block 14 marks enhanced inventory-pose models.
+                light = 240 if mode == "plain" else 224
+                values = {
+                    "Position": ("3f", array("f", (v for xyz in vertices for v in xyz))),
+                    "Color": ("4f", array("f", (1, 1, 1, 1) * count)),
+                    "Normal": ("3f", array("f", normals)),
+                    "UV0": ("2f", array("f", [0] * (count * 2))),
+                    "UV1": ("2i", struct.pack(f"{count * 2}i", *([0, 10] * count))),
+                    "UV2": ("2i", struct.pack(f"{count * 2}i", *([light, 240] * count))),
+                }
+                inputs = [(CTX.buffer(data), fmt, key) for key, (fmt, data) in values.items() if key in shader]
+                vao = CTX.vertex_array(shader, inputs)
+                vao.render(moderngl.TRIANGLES, vertices=count)
+                vao.release()
+                for buffer, _, _ in inputs:
+                    buffer.release()
+                image = Image.frombytes("RGB", target.size, target.read(components=3))
+                image.save(args.result.with_name(f"{args.result.stem}-light-{name}-{bool(defines)}-{mode}.png"))
+                seen = []
+                for f in faces:
+                    cx, cy, cz = place(tuple(v * .5 for v in f))
+                    if mode == "enhanced":
+                        cx, cy = cx / -65536 * focal, cy / -65536 * focal
+                    else:
+                        cx, cy = cx * focal / -cz, cy * focal / -cz
+                    # Framebuffer rows start at the bottom.
+                    pixel = image.getpixel((int((cx + 1) / 2 * size), int((cy + 1) / 2 * size)))[0] / 255
+                    seen.append(pixel)
+                    if mode == "enhanced":
+                        expected = inventory_light(apply(gui, f))
+                        worst = max(worst, abs(pixel - expected))
+                        assert abs(pixel - expected) < .03, (name, defines, mode, f, pixel, expected)
+                if mode != "enhanced":
+                    # Outside enhanced mode the world light (identity Lighting buffer: straight up) applies.
+                    assert max(abs(a - inventory_light(apply(gui, f))) for a, f in zip(seen, faces)) > .05, seen
+                cases += 1
+            shader.release()
+    finally:
+        white.release()
+        target.release()
+    return {"lighting_raster_cases": cases, "lighting_max_error": worst}
+
+
 if args.raster_only:
-    print(json.dumps({"raster_cases": raster_checks(), "failed": 0}))
+    print(json.dumps({"raster_cases": raster_checks(), **lighting_raster(), "failed": 0}))
     raise SystemExit
 
 
@@ -299,7 +423,9 @@ for fault in ("perspective", "global_light"):
     faults.append(fault)
     faulty[0].release(); good[0].release()
 raster_cases = raster_checks()
+lighting = lighting_raster()
 result = {
+    **lighting,
     "pack": str(PACK), "active_overlays": OVERLAYS,
     "gpu": CTX.info["GL_RENDERER"], "linked_actual_pipelines": linkage,
     "ordinary_path_cases": normal_checks, "enhanced_native_vertices": enhanced_checks,

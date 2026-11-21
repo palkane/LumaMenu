@@ -50,6 +50,8 @@ final class ImageCatalog {
     ImageCatalog themed(String name) { return new ImageCatalog(images, craftEngine, themes, themes.get(name)); }
     Themes.Theme theme() { return theme; }
     Themes themes() { return themes; }
+    /** The same images and CraftEngine sources with other themes (the web editor previews unsaved themes.yml). */
+    ImageCatalog withThemes(Themes next) { return new ImageCatalog(images, craftEngine, next); }
 
     /**
      * Every PNG under {@code directory}, keyed by its slash-separated relative path; a missing directory has none.

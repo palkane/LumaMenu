@@ -14,7 +14,16 @@ import java.util.*;
  */
 final class Calibration {
     static final int WIDTH = 452, HEIGHT = 180;
-    private static final int[] STEPS = {32, 8, 1};
+    /**
+     * Cell sizes per click on one corner, the last being the final precision. Every step must keep a Dialog body at
+     * most about 105 cells: the first covers the 452x144 probe (or 96x80 around a bottom corner), the next the chosen
+     * cell widened to at most {@link #REFINE_CELLS} cells across (see {@link Attempt#widen}). Clicks are whole units,
+     * so 1 is as fine as it gets: a fourth click adds no precision.
+     */
+    static final Map<Integer, int[]> STEPS = Map.of(2, new int[]{27, 3}, 3, new int[]{32, 8, 1}, 4, new int[]{32, 8, 2, 1});
+    static final int DEFAULT_CLICKS = 3;
+    /** Cells across a refinement grid; 10x10 stays inside the Dialog body budget. */
+    static final int REFINE_CELLS = 10;
     static final int PROBE_ROWS = 16, PROBE_HEIGHT = PROBE_ROWS * 9;
     /** GUI Y of probe row 0: body at 63, widget padding 4, hit glyphs 6 below the text top. */
     static final int PROBE_TOP = 63 + 4 + 6;
@@ -116,18 +125,26 @@ final class Calibration {
         /** Tall-body rows for a guess g: fits without scrolling and stays bottom-pinned for heights g−8..g+13. */
         static int heightRows(int guess) { return Math.max(PROBE_ROWS, Math.floorDiv(guess - 64, 9)); }
         private static final int HEIGHT_TRIES = 4;
+        private final int[] steps;
         private final List<Point> samples = new ArrayList<>();
         private final List<Point> targets = new ArrayList<>(List.of(TARGETS.getFirst()));
         private int round, tries, tallRows, guess, lowest = 0, highest = Integer.MAX_VALUE;
-        private Box area = new Box(0, 0, WIDTH, PROBE_HEIGHT);
+        private Box area = new Box(0, 0, WIDTH, PROBE_HEIGHT), bounds = area;
         private Mapping candidate;
         private Result settled;
         private boolean complete;
 
+        Attempt() { this(DEFAULT_CLICKS); }
+        /** {@code clicks} per corner: 2, 3 or 4 (see {@link #STEPS}). */
+        Attempt(int clicks) {
+            steps = STEPS.get(clicks);
+            if (steps == null) throw new IllegalArgumentException("每个角的点击次数只能是 2、3 或 4");
+        }
+        int clicks() { return steps.length; }
         private boolean bottom() { return candidate != null; }
         int targetIndex() { return samples.size(); }
-        int step() { return STEPS[round]; }
-        float markerScale() { return .004f / (1 << round); }
+        int step() { return steps[round]; }
+        float markerScale() { return .004f / (1 << Math.min(round, 2)); }
         Point target() { return targets.get(targetIndex()); }
         /** Dialog body rows of the current step. */
         int rows() { return bottom() ? tallRows : PROBE_ROWS; }
@@ -142,7 +159,7 @@ final class Calibration {
             return settled;
         }
         String label() {
-            return NAMES[targetIndex()] + " · " + (targetIndex() + 1) + "/4 · " + (round + 1) + "/3";
+            return NAMES[targetIndex()] + " · " + (targetIndex() + 1) + "/4 · " + (round + 1) + "/" + steps.length;
         }
         List<Box> cells() {
             if (complete) return List.of();
@@ -155,8 +172,9 @@ final class Calibration {
         }
         void choose(Box cell) {
             if (complete || !cells().contains(cell)) throw new IllegalStateException("校准点击已过期");
-            if (round < STEPS.length - 1) {
-                area = cell;
+            if (round < steps.length - 1) {
+                if (round == 0) bounds = area;
+                area = widen(cell, steps[round + 1]);
                 round++;
                 return;
             }
@@ -177,6 +195,17 @@ final class Calibration {
                 case 3 -> area = around(targets.get(3));
                 default -> measured();
             }
+        }
+        /**
+         * The next grid: the chosen cell plus a margin of finer cells on every side, kept inside this corner's first
+         * grid. A click that slipped into the neighbouring cell still leaves the cross on the next grid.
+         */
+        private Box widen(Box cell, int next) {
+            int margin = Math.max(0, (REFINE_CELLS * next - Math.max(cell.width, cell.height)) / 2);
+            int left = Math.max(bounds.x, cell.x - margin), top = Math.max(bounds.y, cell.y - margin);
+            int right = Math.min(bounds.x + bounds.width, cell.x + cell.width + margin);
+            int bottom = Math.min(bounds.y + bounds.height, cell.y + cell.height + margin);
+            return new Box(left, top, right - left, bottom - top);
         }
         /** Bottom corners on a tall body built for {@code guess}; their cells start around where they should land. */
         private void measure(int guess) {
@@ -220,15 +249,18 @@ final class Calibration {
             for (int i = 2; i < 4; i++) low += (samples.get(i).y - scale * targets.get(i).y) / 2;
             int bodyY = (int) Math.round(PROBE_TOP + top - 10 - low);
             int screen = bodyY + 23 + 9 * tallRows;
-            if (bodyY <= 33 || bodyY >= 62) {
+            // Coarser final cells blur bodyY by about a cell, so a pinned body must not pass for a free one.
+            int slack = steps[steps.length - 1] - 1;
+            boolean overflow = bodyY <= 33 + slack, shortBody = bodyY >= 62 - slack;
+            if (overflow || shortBody) {
                 // Overflowing means the screen is lower than this body needs; a short body, that it is higher.
-                if (bodyY <= 33) highest = Math.min(highest, screen - 1);
-                else lowest = Math.max(lowest, screen + 1);
+                if (overflow) highest = Math.min(highest, screen - 1 + slack);
+                else lowest = Math.max(lowest, screen + 1 - slack);
                 if (++tries >= HEIGHT_TRIES || lowest > highest)
                     throw new IllegalArgumentException("无法测定屏幕高度，请重新定位");
                 while (samples.size() > 2) samples.removeLast();
                 // A guess covers heights guess−8..guess+13.
-                measure(bodyY >= 62 || highest - lowest <= 21 ? lowest + 8 : highest - 13);
+                measure(shortBody || highest - lowest <= 21 ? lowest + 8 : highest - 13);
                 return;
             }
             Frame frame = Frame.of(screen);
@@ -243,11 +275,15 @@ final class Calibration {
         private final SharedProperties file;
         private Map<UUID, Mapping> values = Map.of();
         private Map<UUID, Frame> frames = Map.of();
+        private final CalibrationPresets presets;
+        /** {@code file} null keeps everything in memory; presets live next to it in calibration-presets.properties. */
         Store(Path file) throws IOException {
             this.file = new SharedProperties(file,
                 "LumaMenu calibration v3 (fixed 452x180 body) / v4 (screen extra trail), camera rig", "calibration-");
+            this.presets = new CalibrationPresets(file == null ? null : file.resolveSibling("calibration-presets.properties"));
             sync();
         }
+        CalibrationPresets presets() { return presets; }
         /** Re-reads a changed file; a file another server left unreadable keeps the values already loaded. */
         private void sync() throws IOException {
             if (file.refresh()) parse();
@@ -258,18 +294,11 @@ final class Calibration {
             Properties properties = file.properties();
             try {
                 for (String id : properties.stringPropertyNames()) {
-                    String[] fields = properties.getProperty(id).split(" ");
-                    // v1: the old 205-high surface; v2: measured through the spectator view, whose flying FOV
-                    // modifier (1.1) the camera rig no longer applies. Both must be calibrated again.
-                    if (fields[0].equals("1") || fields[0].equals("2")) continue;
-                    // v3: fixed 20-row body; v4: probe-measured screen height and per-player rows.
-                    if (!(fields[0].equals("3") && fields.length == 5 || fields[0].equals("4") && fields.length == 8))
-                        throw new IllegalArgumentException();
+                    Entry entry = decode(properties.getProperty(id));
+                    if (entry == null) continue;
                     UUID player = UUID.fromString(id);
-                    nextValues.put(player, new Mapping(Double.parseDouble(fields[1]),
-                        Double.parseDouble(fields[2]), Double.parseDouble(fields[3]), Double.parseDouble(fields[4])));
-                    nextFrames.put(player, fields.length == 5 ? Frame.LEGACY : new Frame(Integer.parseInt(fields[5]),
-                        Integer.parseInt(fields[6]), Integer.parseInt(fields[7])));
+                    nextValues.put(player, entry.mapping());
+                    nextFrames.put(player, entry.frame());
                 }
             } catch (IllegalArgumentException error) { throw new IOException("无效的LumaMenu校准文件", error); }
             values = nextValues;
@@ -283,11 +312,7 @@ final class Calibration {
         Collection<Mapping> all() { quietSync(); return List.copyOf(values.values()); }
         void save(UUID player, Mapping mapping) throws IOException { save(player, mapping, Frame.LEGACY); }
         void save(UUID player, Mapping mapping, Frame frame) throws IOException {
-            Objects.requireNonNull(mapping);
-            Objects.requireNonNull(frame);
-            String base = mapping.sx + " " + mapping.sy + " " + mapping.ox + " " + mapping.oy;
-            file.put(player.toString(), frame.screen() == 0 ? "3 " + base
-                : "4 " + base + " " + frame.screen() + " " + frame.extra() + " " + frame.trail());
+            file.put(player.toString(), encode(mapping, frame));
             try { parse(); }
             catch (IOException otherServerEntry) {
                 Map<UUID, Mapping> nextValues = new HashMap<>(values);
@@ -298,6 +323,44 @@ final class Calibration {
                 frames = nextFrames;
             }
         }
+        /** The player has no calibration any more (their last preset was deleted). */
+        void remove(UUID player) throws IOException {
+            Map<String, String> change = new HashMap<>();
+            change.put(player.toString(), null);
+            file.putAll(change);
+            try { parse(); }
+            catch (IOException otherServerEntry) {
+                Map<UUID, Mapping> nextValues = new HashMap<>(values);
+                Map<UUID, Frame> nextFrames = new HashMap<>(frames);
+                nextValues.remove(player);
+                nextFrames.remove(player);
+                values = nextValues;
+                frames = nextFrames;
+            }
+        }
+    }
+
+    record Entry(Mapping mapping, Frame frame) {}
+    /** v3 {@code 3 sx sy ox oy} (fixed 20-row body) or v4 {@code 4 sx sy ox oy H extra trail}. */
+    static String encode(Mapping mapping, Frame frame) {
+        Objects.requireNonNull(mapping);
+        Objects.requireNonNull(frame);
+        String base = mapping.sx + " " + mapping.sy + " " + mapping.ox + " " + mapping.oy;
+        return frame.screen() == 0 ? "3 " + base : "4 " + base + " " + frame.screen() + " " + frame.extra() + " " + frame.trail();
+    }
+    /** Null for v1/v2 entries, which must be calibrated again; malformed text throws IllegalArgumentException. */
+    static Entry decode(String value) {
+        String[] fields = value.split(" ");
+        // v1: the old 205-high surface; v2: measured through the spectator view, whose flying FOV
+        // modifier (1.1) the camera rig no longer applies. Both must be calibrated again.
+        if (fields[0].equals("1") || fields[0].equals("2")) return null;
+        // v3: fixed 20-row body; v4: probe-measured screen height and per-player rows.
+        if (!(fields[0].equals("3") && fields.length == 5 || fields[0].equals("4") && fields.length == 8))
+            throw new IllegalArgumentException();
+        return new Entry(new Mapping(Double.parseDouble(fields[1]), Double.parseDouble(fields[2]),
+            Double.parseDouble(fields[3]), Double.parseDouble(fields[4])),
+            fields.length == 5 ? Frame.LEGACY : new Frame(Integer.parseInt(fields[5]), Integer.parseInt(fields[6]),
+                Integer.parseInt(fields[7])));
     }
 
     static void atomicReplace(Path temp, Path file) throws IOException {

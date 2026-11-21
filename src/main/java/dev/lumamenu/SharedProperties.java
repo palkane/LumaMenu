@@ -52,10 +52,20 @@ final class SharedProperties {
 
     /** Writes one entry on top of the latest file contents; nothing changes in memory when writing fails. */
     void put(String key, String value) throws IOException {
+        Map<String, String> change = new HashMap<>();
+        change.put(key, value);
+        putAll(change);
+    }
+
+    /** Writes several entries in one atomic replacement; a null value removes the key. */
+    void putAll(Map<String, String> changes) throws IOException {
         refresh();
         Properties next = new Properties();
         next.putAll(current);
-        next.setProperty(key, value);
+        changes.forEach((key, value) -> {
+            if (value == null) next.remove(key);
+            else next.setProperty(key, value);
+        });
         if (file != null) {
             Files.createDirectories(file.toAbsolutePath().getParent());
             Path temp = Files.createTempFile(file.toAbsolutePath().getParent(), tempPrefix, ".tmp");

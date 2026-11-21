@@ -48,8 +48,9 @@ void main() {
     #endif
     vertexColor = menuDisplay ? Color : minecraft_mix_light(Light0_Direction, Light1_Direction, Normal, Color);
     #ifndef OIT_ALPHA_ONLY
-    lightMapColor = sample_lightmap(Sampler2, UV2);
+    lightMapColor = sample_lightmap(Sampler2, menuDisplay ? ivec2(240) : UV2);
     overlayColor = texelFetch(Sampler1, UV1, 0);
+    if (menuDisplay && luma_lit(UV2)) overlayColor = luma_menu_view(Position);
     #endif
 
     texCoord0 = UV0;

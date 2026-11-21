@@ -1,0 +1,26 @@
+schema-version: 3
+id: calibration-check
+title: 定位检查
+# Opened by LumaMenu right after a calibration, with the hit-area overlay on: the tinted blocks are where clicks land
+# and should cover each box exactly. "重新定位" measures the same preset again. The engine opens this page by its ID,
+# so keep the ID; boxes sit at the canvas corners, edge middles and centre, where a wrong mapping shows most.
+state:
+  notice: 彩色半透明块是实际点击区，应与每个方框重合；悬停可看坐标
+frontend:
+  # Diagnostic page: the boxes must reach the canvas edges, so the frame is as wide as the canvas and grows in height.
+  panel: {type: panel, width: 468, height: 236, header: 18, offset: {x: 226, y: 80, z: -1}}
+  title: {type: text, content: 定位检查, size: 9, color: '@title', offset: {x: 226, y: -29}}
+  tl: {type: button, style: theme, content: 左上, width: 36, height: 20, offset: {x: 22, y: 14}, actions: 'notice: 点中了左上'}
+  tc: {type: button, style: theme, content: 上, width: 36, height: 20, offset: {x: 226, y: 14}, actions: 'notice: 点中了上方'}
+  tr: {type: button, style: theme, content: 右上, width: 36, height: 20, offset: {x: 430, y: 14}, actions: 'notice: 点中了右上'}
+  ml: {type: button, style: theme, content: 左, width: 36, height: 20, offset: {x: 22, y: 80}, actions: 'notice: 点中了左侧'}
+  mc: {type: button, style: theme, content: 中, width: 36, height: 20, offset: {x: 226, y: 80}, actions: 'notice: 点中了中间'}
+  mr: {type: button, style: theme, content: 右, width: 36, height: 20, offset: {x: 430, y: 80}, actions: 'notice: 点中了右侧'}
+  bl: {type: button, style: theme, content: 左下, width: 36, height: 20, offset: {x: 22, y: 146}, actions: 'notice: 点中了左下'}
+  bc: {type: button, style: theme, content: 下, width: 36, height: 20, offset: {x: 226, y: 146}, actions: 'notice: 点中了下方'}
+  br: {type: button, style: theme, content: 右下, width: 36, height: 20, offset: {x: 430, y: 146}, actions: 'notice: 点中了右下'}
+  hint: {type: text, content: '{notice}', width: 330, size: 8, color: '@muted', offset: {x: 226, y: 47}}
+  done: {type: button, style: theme, variant: primary, content: 对齐了, width: 90, height: 18, offset: {x: 170, y: 170},
+    actions: close, tooltip: 保存并回到菜单}
+  again: {type: button, style: theme, content: 重新定位, width: 90, height: 18, offset: {x: 282, y: 170},
+    actions: calibrate, tooltip: 不重合时重新测这一个预设}

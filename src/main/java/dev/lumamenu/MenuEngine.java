@@ -23,7 +23,7 @@ final class MenuEngine implements LumaMenuApi {
         default boolean closeWithEscape() { return true; }
         default void begin(Player player) {}
         default void end(Player player) {}
-        /** Applies the requested client pitch and returns whether the client now looks straight down. */
+        /** Whether the camera rig may look down (straight down, or along the light in the Nether; see DisplayRenderer.Look). */
         default boolean look(Player player, boolean down) { return false; }
         /**
          * {@code cornerClose}: Dialog-body "×" (Esc only with {@code escape}), otherwise the native close button with
@@ -56,13 +56,46 @@ final class MenuEngine implements LumaMenuApi {
         default void form(Player player, FormView form, Consumer<Map<String, String>> submitted, Runnable cancelled) {
             throw new IllegalStateException("表单不可用");
         }
+        /**
+         * Native list of the player's calibration presets: one button per label (index into the labels) with a delete
+         * button beside it, then "new preset" when {@code canAdd}; close and Esc cancel. {@code chosen} runs once, on
+         * the server thread.
+         */
+        /** Clicks per calibration corner: 2, 3 or 4 ({@code calibration-clicks}). */
+        default int calibrationClicks() { return Calibration.DEFAULT_CLICKS; }
+        default void presets(Player player, PresetView view, Consumer<PresetChoice> chosen) {
+            throw new IllegalStateException("定位预设界面不可用");
+        }
         void failure(Throwable error);
     }
+    record PresetView(List<String> labels, boolean canAdd) {}
+    enum PresetAction { USE, DELETE, ADD, CANCEL }
+    record PresetChoice(PresetAction action, int index) {}
     /** A form as shown: texts already expanded. */
     record FormView(String title, String submit, String cancel, List<Input> inputs) {}
-    /** {@code large}: long limits get a wide multi-line box; line breaks typed there are stored as spaces. */
-    record Input(String key, String label, String initial, int maxLength, boolean large) {}
-    static final int LARGE_INPUT = 64;
+    /**
+     * The box grows with {@code maxLength}: up to {@link #SINGLE_LINE_INPUT} a single line {@code width} GUI pixels
+     * wide (about one CJK glyph per character), beyond it {@code lines} rows of {@link #INPUT_WIDTH}. Line breaks
+     * typed into a multi-line box are stored as spaces.
+     */
+    record Input(String key, String label, String initial, int maxLength, int width, int lines) {
+        Input(String key, String label, String initial, int maxLength) {
+            this(key, label, initial, maxLength, inputWidth(maxLength), inputLines(maxLength));
+        }
+        boolean multiline() { return lines > 0; }
+        /** Multi-line height as the client computes it for that many rows: 9 pixels each plus padding. */
+        int height() { return lines * 9 + 8; }
+    }
+    static final int SINGLE_LINE_INPUT = 48;
+    static final int INPUT_WIDTH = 300;
+    static final int MAX_INPUT = 256;
+    static int inputWidth(int maxLength) {
+        return maxLength > SINGLE_LINE_INPUT ? INPUT_WIDTH : Math.clamp(9L * maxLength + 12, 80, INPUT_WIDTH);
+    }
+    /** 0 for a single line (which reaches full width at 32 characters); else one row per 32 characters, 2..8 rows. */
+    static int inputLines(int maxLength) {
+        return maxLength > SINGLE_LINE_INPUT ? Math.clamp((maxLength + 31) / 32, 2, 8) : 0;
+    }
     record Stamp(UUID session, UUID page) {}
     private final Plugin plugin;
     private final Host host;
@@ -197,7 +230,7 @@ final class MenuEngine implements LumaMenuApi {
         host.requireMain();
         try {
             if (calibrated(player)) open(plugin, player, page, Map.of(), action -> {}, closed -> {});
-            else calibrate(player, page);
+            else measure(player, page);
             return true;
         } catch (RuntimeException error) {
             host.message(player, error.getMessage() == null ? "菜单打开失败" : error.getMessage());
@@ -238,6 +271,9 @@ final class MenuEngine implements LumaMenuApi {
         return calibration.get(player.getUniqueId()) != null;
     }
     int activeCount() { host.requireMain(); return sessions.size(); }
+    /** Every compiled page, theme copies included (the web editor checks a candidate file's links against them). */
+    Map<String, Layouts.Page> compiledPages() { host.requireMain(); return compiled.pages(); }
+    String server() { return host.server(); }
     boolean debug(Player player) { host.requireMain(); return debug.contains(player.getUniqueId()); }
     /** Toggles the hit-area overlay and re-presents an open menu or calibration so it applies at once. */
     void debug(Player player, boolean enabled) {
@@ -286,12 +322,26 @@ final class MenuEngine implements LumaMenuApi {
         if (mapping == null) throw new IllegalStateException("请先 /lumamenu calibrate 完成两点定位");
         entry(player, mapping, target, mode(player), false);
         Map<String, String> checked = checkedValues(values);
-        replace(player);
+        Session previous = sessions.get(player.getUniqueId());
+        // A calibration hands over too: that is how its check page appears without the menu closing in between.
+        boolean takeover = previous != null && previous.player == player && !previous.suspended && previous.active();
+        if (takeover) {
+            // The open menu hands over without closing: camera rig, inventory mask, HUD and Dialog stay on the client.
+            detach(previous);
+            ended(previous, Reason.REPLACED);
+            if (sessions.containsKey(player.getUniqueId())) throw new IllegalStateException("新的菜单会话已接管此玩家");
+        } else replace(player);
         Session session = new Session(owner, player, callback, closed);
         session.page = target.id();
         session.values.putAll(checked);
+        if (takeover && previous.owner == owner && previous.page != null
+                && compiled.pages().get(previous.page).family().equals(target.family())) {
+            // Same owner and layout file: back returns through the previous pages; state starts fresh as on any open.
+            session.history.addAll(previous.history);
+            if (!previous.page.equals(target.id())) session.history.push(previous.page);
+        }
         sessions.put(player.getUniqueId(), session);
-        try { host.begin(player); present(session, true); events(session, target.openEvents()); }
+        try { if (!takeover) host.begin(player); present(session, true); events(session, target.openEvents()); }
         catch (RuntimeException error) {
             close(player, Reason.ERROR, true);
             throw error;
@@ -301,7 +351,7 @@ final class MenuEngine implements LumaMenuApi {
 
     void demo(Player player, String page) {
         if (!calibrated(player)) {
-            calibrate(player, page);
+            measure(player, page);
             return;
         }
         open(plugin, player, page, Map.of("status", "等待点击", "probe", "点击格子，核对命中范围"),
@@ -316,22 +366,125 @@ final class MenuEngine implements LumaMenuApi {
             closed -> {});
     }
 
-    @Override public void calibrate(Player player) { calibrate(player, null); }
-    private void calibrate(Player player, String after) {
+    /**
+     * {@code /lumamenu calibrate}, the {@code calibrate} action and the API: the player's preset list, or straight
+     * into a first calibration when they have none. An open menu closes first.
+     */
+    @Override public void calibrate(Player player) { presets(player, null); }
+    private void presets(Player player, String after) {
+        host.requireMain();
+        checkPlayer(player);
+        if (after != null) page(player, after);
+        UUID id = player.getUniqueId();
+        var store = calibration.presets();
+        Calibration.Mapping current = calibration.get(id);
+        if (store.list(id).isEmpty() && current != null) {
+            // A calibration made before presets becomes the first one.
+            try { store.save(id, 1, CalibrationPresets.name(1), current, calibration.frame(id)); }
+            catch (IOException error) { throw new IllegalStateException("定位预设保存失败", error); }
+        }
+        if (store.list(id).isEmpty()) { measure(player, after); return; }
+        showPresets(player, after);
+    }
+    private void showPresets(Player player, String after) {
+        UUID id = player.getUniqueId();
+        if (sessions.containsKey(id)) close(player, Reason.CLOSED, false);
+        var store = calibration.presets();
+        List<CalibrationPresets.Preset> shown = store.list(id);
+        int active = store.active(id);
+        List<String> labels = new ArrayList<>();
+        for (var preset : shown) labels.add(label(preset, preset.slot() == active));
+        host.presets(player, new PresetView(labels, shown.size() < CalibrationPresets.MAX),
+            choice -> guarded(player, () -> chosen(player, after, shown, choice)));
+    }
+    /** "▶ 预设 2 · 界面高 252": the one in use is marked; v3 entries never measured the screen height. */
+    static String label(CalibrationPresets.Preset preset, boolean active) {
+        return (active ? "▶ " : "") + preset.name()
+            + (preset.frame().screen() == 0 ? " · 旧版定位" : " · 界面高 " + preset.frame().screen());
+    }
+    private void chosen(Player player, String after, List<CalibrationPresets.Preset> shown, PresetChoice choice) {
+        if (!player.isOnline()) return;
+        UUID id = player.getUniqueId();
+        var store = calibration.presets();
+        switch (choice.action()) {
+            case CANCEL -> { if (after != null && calibrated(player) && !busy(id)) demo(player, after); }
+            case ADD -> {
+                if (store.free(id) == 0) { host.message(player, "最多 " + CalibrationPresets.MAX + " 个定位预设，请先删除一个。"); showPresets(player, after); }
+                else measure(player, after);
+            }
+            case USE, DELETE -> {
+                if (choice.index() < 0 || choice.index() >= shown.size()) return;
+                var picked = shown.get(choice.index());
+                // The list may have changed meanwhile (another server or Dialog): act only on that same stored preset.
+                var stored = store.list(id).stream()
+                    .filter(p -> p.slot() == picked.slot() && p.name().equals(picked.name())).findFirst().orElse(null);
+                if (stored == null) { host.message(player, "该定位预设已不存在。"); showPresets(player, after); return; }
+                try {
+                    if (choice.action() == PresetAction.USE) {
+                        use(id, stored);
+                        host.message(player, "已切换到定位预设「" + stored.name() + "」。");
+                        if (after != null) demo(player, after);
+                        return;
+                    }
+                    boolean wasActive = store.active(id) == stored.slot();
+                    store.remove(id, stored.slot());
+                    var rest = store.list(id);
+                    if (wasActive && rest.isEmpty()) calibration.remove(id);
+                    else if (wasActive) use(id, rest.getFirst());
+                    host.message(player, "已删除定位预设「" + stored.name() + "」"
+                        + (wasActive && !rest.isEmpty() ? "，改用「" + rest.getFirst().name() + "」。" : "。")
+                        + (rest.isEmpty() ? "打开菜单前需要重新定位。" : ""));
+                } catch (IOException error) { throw new IllegalStateException("定位预设保存失败", error); }
+                showPresets(player, after);
+            }
+        }
+    }
+    /** Makes the preset the calibration in use; its profile is built in the background. */
+    private void use(UUID id, CalibrationPresets.Preset preset) throws IOException {
+        calibration.presets().activate(id, preset.slot());
+        calibration.save(id, preset.mapping(), preset.frame());
+        profiles.warm(id, preset.mapping());
+    }
+    /** Starts a calibration that is saved as a new preset (or over the one in use when all slots are taken). */
+    void measure(Player player) { measure(player, null, 0); }
+    private void measure(Player player, String after) { measure(player, after, 0); }
+    /** {@code slot} 0: the first free preset; otherwise that preset is measured again. */
+    private void measure(Player player, String after, int slot) {
         host.requireMain();
         checkPlayer(player);
         if (after != null) page(player, after);
         replace(player);
         Session session = new Session(plugin, player, action -> {}, closed -> {});
-        session.attempt = new Calibration.Attempt();
+        session.attempt = new Calibration.Attempt(host.calibrationClicks());
         session.afterCalibration = after;
+        session.slot = slot;
         sessions.put(player.getUniqueId(), session);
         try { host.begin(player); presentCalibration(session); }
         catch (RuntimeException error) {
             close(player, Reason.ERROR, true);
             throw error;
         }
-        host.message(player, "依次点击左上、右下十字中心，每点3次，共6次；右上角×取消，不覆盖旧值。");
+        int clicks = session.attempt.clicks();
+        host.message(player, "依次点击四个角的十字中心，每个点" + clicks + "次，共" + 4 * clicks + "次；右上角×取消，不覆盖旧值。");
+    }
+    /** Built-in page shown after a calibration, with the hit areas tinted (layouts/calibration-check.yml). */
+    static final String CHECK_PAGE = "calibration-check";
+    /**
+     * Takes the finished calibration over with the check page: its {@code calibrate} action measures {@code slot}
+     * again, closing it (button, × or Esc) returns to {@code after}.
+     */
+    private void check(Player player, int slot, String after) {
+        Handle handle = open(plugin, player, CHECK_PAGE, Map.of(), action -> {}, closed -> {
+            if (closed.reason() != Reason.CLOSED || after == null) return;
+            host.later(() -> guarded(player, () -> {
+                if (player.isOnline() && !busy(player.getUniqueId()) && calibrated(player)) demo(player, after);
+            }), 1);
+        });
+        Session session = (Session) handle;
+        session.overlay = true;
+        session.slot = slot;
+        session.afterCalibration = after;
+        present(session, false);
     }
 
     /** Image item models the compiled pages reference, grid entry images included, for the resource-pack export. */
@@ -424,7 +577,7 @@ final class MenuEngine implements LumaMenuApi {
         Placed placed = shifts == null ? null : placements.computeIfAbsent(new Placement(page.id(), mapping.key(),
             session.mode, session.down, Arrays.stream(shifts).boxed().toList()), key -> {
                 Layouts.Page moved = page.moved(shifts);
-                return new Placed(moved, MenuCache.prepare(moved, mapping, session.mode, session.down), new HashMap<>());
+                return new Placed(moved, MenuCache.prepare(moved, mapping, session.mode), new HashMap<>());
             });
         Map<Integer, ClickEvent> clicks = new HashMap<>();
         Map<Integer, String> tips = new HashMap<>();
@@ -434,7 +587,7 @@ final class MenuEngine implements LumaMenuApi {
             if (hiddenControls.contains(i) || !permitted(session.player, control.permission())) continue;
             allowed.add(i);
             String tip = values.apply(control.tooltip());
-            if (debug.contains(session.player.getUniqueId())) {
+            if (session.overlay || debug.contains(session.player.getUniqueId())) {
                 var box = (placed == null ? page : placed.page()).controls().get(i).box();
                 tip = "[调试] " + control.id() + " · X " + box.x() + ".." + (box.x() + box.width() - 1)
                     + " / Y " + box.y() + ".." + (box.y() + box.height() - 1)
@@ -482,30 +635,44 @@ final class MenuEngine implements LumaMenuApi {
         // Every body is as wide as the calibration probe's; a narrower canvas is padded to its place in the line.
         host.show(session.player, HitSurface.frame(HitSurface.bind(chrome ? hit.chrome().surface() : hit.surface(),
             lifts, clicks, tips, allowed, from, rows, page.surfaceOriginX(), page.surfaceAdvance(), HitSurface.ADVANCE,
-            chrome ? hit.chrome() : null, exit, debug.contains(session.player.getUniqueId())),
+            chrome ? hit.chrome() : null, exit, session.overlay || debug.contains(session.player.getUniqueId())),
             page.surfaceOriginY(), from, rows, HitSurface.ADVANCE, !corner, frame),
             exit, HitSurface.BODY_WIDTH, corner, page.closeWithEscape(host.closeWithEscape()));
         session.escape = corner && page.closeWithEscape(host.closeWithEscape());
         session.grace = ESCAPE_GRACE_TICKS;
-        session.facing = Facing.of(session.player);
     }
 
-    /** Yaw (relative to a vehicle, which may turn its rider) and pitch, to notice a Dialog closed by Esc. */
-    private record Facing(float yaw, float pitch) {
-        static Facing of(Player player) {
-            var location = player.getLocation();
-            var vehicle = player.getVehicle();
-            return new Facing(location.getYaw() - (vehicle == null ? 0 : vehicle.getLocation().getYaw()),
-                location.getPitch());
-        }
-        boolean turned(Facing now) {
-            float yaw = Math.abs(((this.yaw - now.yaw) % 360 + 540) % 360 - 180);
-            return yaw > ESCAPE_TURN || Math.abs(pitch - now.pitch) > ESCAPE_TURN;
-        }
+    /**
+     * Movement keys as a bit set: forward, backward, left, right, jump, sneak. Sprint is left out (a toggled sprint
+     * may flip on its own).
+     */
+    static int keys(org.bukkit.Input input) {
+        if (input == null) return 0;
+        return (input.isForward() ? 1 : 0) | (input.isBackward() ? 2 : 0) | (input.isLeft() ? 4 : 0)
+            | (input.isRight() ? 8 : 0) | (input.isJump() ? 16 : 0) | (input.isSneak() ? 32 : 0);
     }
-    /** An open Dialog stops the mouse turning the view, so turning more than this means the Dialog is gone. */
-    static final float ESCAPE_TURN = 1;
-    /** Ticks after showing in which late rotation packets only move the baseline. */
+    /**
+     * A Dialog closed by Esc tells the server nothing, and with the camera on the menu rig the client sends no
+     * rotation either. An open Dialog releases every key, so a newly pressed movement key means the Dialog is gone.
+     */
+    void input(Player player, org.bukkit.Input input) {
+        Session session = sessions.get(player.getUniqueId());
+        if (session == null) return;
+        int now = keys(input), pressed = now & ~session.keys;
+        session.keys = now;
+        if (pressed != 0 && session.escape && !session.suspended && session.attempt == null && session.grace == 0)
+            close(session.player, Reason.CLOSED, true);
+    }
+    /**
+     * Digging, swinging, using or creative-inventory packets cannot come from behind an open Dialog either. With the
+     * client in creative (experience bar hidden) they would also act as creative there, so the menu closes at once.
+     */
+    void interacted(Player player) {
+        Session session = sessions.get(player.getUniqueId());
+        if (session != null && !session.suspended && session.attempt == null && session.grace == 0)
+            close(session.player, Reason.CLOSED, true);
+    }
+    /** Ticks after showing in which key changes (the release as the Dialog opens) only update the baseline. */
     static final int ESCAPE_GRACE_TICKS = 5;
 
     /** Whether a clickable control this player may use closes the menu directly. */
@@ -561,7 +728,11 @@ final class MenuEngine implements LumaMenuApi {
             if (action.equals("return")) break;
             if (action.equals("close")) { session.close(); return; }
             if (action.equals("back")) { session.back(); return; }
-            if (action.equals("calibrate")) { calibrate(session.player, session.page); return; }
+            if (action.equals("calibrate")) {
+                if (session.overlay) measure(session.player, session.afterCalibration, session.slot);
+                else presets(session.player, session.page);
+                return;
+            }
             if (action.startsWith("theme:")) {
                 try { theme(session.player, Layouts.argument(action)); }
                 catch (IOException error) { throw new IllegalStateException("主题设置保存失败", error); }
@@ -571,20 +742,20 @@ final class MenuEngine implements LumaMenuApi {
             switch (action.substring(0, action.indexOf(':'))) {
                 case "open" -> { session.open(argument); return; }
                 case "tell" -> host.message(session.player, argument);
-                // Like DialogMenu: the menu closes first, then the player runs the command.
-                case "command" -> { session.close(); host.command(session.player, argument); return; }
+                // The menu closes after the command, unless the command opens another LumaMenu (see closeAfterCommand).
+                case "command" -> { closeAfterCommand(session); host.command(session.player, argument); return; }
                 case "command-in-place" -> host.command(session.player, argument);
-                case "console" -> { session.close(); host.console(argument); return; }
+                case "console" -> { closeAfterCommand(session); host.console(argument); return; }
                 case "sound" -> host.sound(session.player, argument);
                 case "callback" -> session.callback.accept(new Action(session, session.page, control.id(), argument));
                 // State changes show once the whole chain has run, like DialogMenu.
                 case "set" -> {
                     String[] parts = argument.split(" ", 2);
                     if (parts.length != 2) throw new IllegalArgumentException("set须为 key value：" + action);
-                    session.state(parts[0]).put(parts[0], parts[1]);
+                    session.store(parts[0], parts[1], false);
                 }
-                case "toggle" -> session.state(argument).put(argument,
-                    Boolean.toString(!Boolean.parseBoolean(session.state(argument).get(argument))));
+                case "toggle" -> session.store(argument,
+                    Boolean.toString(!Boolean.parseBoolean(session.state(argument).get(argument))), false);
                 case "notice" -> session.state().put("notice", argument);
                 case "slot" -> {
                     String[] parts = argument.split(" ", 2);
@@ -602,7 +773,7 @@ final class MenuEngine implements LumaMenuApi {
                 // Answers go to the same-named state keys; the rest of the chain runs once the menu is back.
                 case "form" -> {
                     List<String> rest = List.copyOf(list.subList(index + 1, list.size()));
-                    form(session, argument, answers -> answers.forEach((key, value) -> session.state(key).put(key, value)),
+                    form(session, argument, answers -> answers.forEach((key, value) -> session.store(key, value, true)),
                         rest.isEmpty() ? null : () -> execute(session, control, rest, session.variables()));
                     return;
                 }
@@ -625,8 +796,7 @@ final class MenuEngine implements LumaMenuApi {
         MenuVariables values = session.variables();
         var view = new FormView(values.apply(form.title()), values.apply(form.submit()), values.apply(form.cancel()),
             form.fields().stream().map(field -> new Input(field.key(), values.apply(field.label()),
-                cut(values.apply(field.initial()), field.maxLength()), field.maxLength(),
-                field.maxLength() >= LARGE_INPUT)).toList());
+                cut(values.apply(field.initial()), field.maxLength()), field.maxLength())).toList());
         Object identity = new Object();
         session.suspended = true;
         session.respawn = false;
@@ -836,18 +1006,30 @@ final class MenuEngine implements LumaMenuApi {
                 session.check();
                 session.attempt.choose(box);
                 if (session.attempt.complete()) {
+                    String name;
+                    int slot;
                     try {
                         var settled = session.attempt.settled();
                         Calibration.Mapping mapping = settled.mapping();
-                        calibration.save(session.player.getUniqueId(), mapping, settled.frame());
+                        UUID id = session.player.getUniqueId();
+                        var store = calibration.presets();
+                        slot = session.slot > 0 ? session.slot : store.free(id);
+                        if (slot == 0) slot = Math.max(1, store.active(id));
+                        name = CalibrationPresets.name(slot);
+                        store.save(id, slot, name, mapping, settled.frame());
+                        calibration.save(id, mapping, settled.frame());
                         // Nothing is compiled here: the profile is built in the background, and a page opened
                         // before that is built on the spot.
-                        profiles.warm(session.player.getUniqueId(), mapping);
+                        profiles.warm(id, mapping);
                     } catch (IOException error) { throw new IllegalStateException("校准保存失败，旧值保留", error); }
                     String after = session.afterCalibration;
-                    session.close();
-                    host.message(session.player, "定位已保存。修改FOV、GUI缩放或窗口后请重新校准。");
-                    if (after != null) demo(session.player, after);
+                    host.message(session.player, "定位已保存为「" + name + "」并启用。换了窗口大小、GUI缩放或视野时，"
+                        + "再次打开定位即可切换或新建预设（最多" + CalibrationPresets.MAX + "个）。");
+                    if (compiled.pages().containsKey(CHECK_PAGE)) check(session.player, slot, after);
+                    else {
+                        session.close();
+                        if (after != null) demo(session.player, after);
+                    }
                 } else presentCalibration(session);
             }), session.attempt.label() + " · 点击十字中心"));
         displays.calibration(session.player, session.attempt);
@@ -865,12 +1047,7 @@ final class MenuEngine implements LumaMenuApi {
         host.requireMain();
         Session session = sessions.get(player.getUniqueId());
         if (session == null || session.player != player) return;
-        sessions.remove(player.getUniqueId());
-        stamps.remove(player.getUniqueId());
-        tokens.remove(player.getUniqueId());
-        if (session.gesture != null) { session.gesture.cancel.run(); session.gesture = null; }
-        session.form = null;
-        session.suspended = false;
+        detach(session);
         try { displays.close(player); }
         catch (RuntimeException error) { host.failure(error); }
         if (hideDialog && player.isOnline()) {
@@ -879,6 +1056,38 @@ final class MenuEngine implements LumaMenuApi {
         }
         try { host.end(player); }
         catch (RuntimeException error) { host.failure(error); }
+        ended(session, reason);
+    }
+    /** Ticks a menu stays after {@code command:}/{@code console:} for the command to open another LumaMenu. */
+    static final int COMMAND_CLOSE_TICKS = 2;
+    /**
+     * {@code command:}/{@code console:} end the menu, but only after the command has run: a LumaMenu it opens within
+     * {@link #COMMAND_CLOSE_TICKS} takes the session over (see {@link #open}) instead of a close and a fresh open.
+     * Clicks stop at once. A foreign Dialog the command shows still ends the menu through {@link #replaced}.
+     */
+    private void closeAfterCommand(Session session) {
+        UUID id = session.player.getUniqueId();
+        tokens.remove(id);
+        if (session.gesture != null) { session.gesture.cancel.run(); session.gesture = null; }
+        if (session.closing != null) return;
+        session.closing = host.later(() -> guarded(session.player, () -> {
+            if (sessions.get(id) == session) close(session.player, Reason.CLOSED, true);
+        }), COMMAND_CLOSE_TICKS);
+    }
+    /** Removes the session from the player without touching the client. */
+    private void detach(Session session) {
+        UUID id = session.player.getUniqueId();
+        sessions.remove(id);
+        stamps.remove(id);
+        tokens.remove(id);
+        if (session.gesture != null) { session.gesture.cancel.run(); session.gesture = null; }
+        if (session.closing != null) { session.closing.run(); session.closing = null; }
+        session.form = null;
+        session.suspended = false;
+    }
+    /** Close events and notifications of a session that has just been detached. */
+    private void ended(Session session, Reason reason) {
+        Player player = session.player;
         Layouts.Page closedPage = session.page == null ? null : compiled.pages().get(session.page);
         if (closedPage != null) {
             try { events(session, closedPage.closeEvents()); }
@@ -911,11 +1120,7 @@ final class MenuEngine implements LumaMenuApi {
     void tick() {
         for (Session session : List.copyOf(sessions.values())) {
             if (!session.active()) close(session.player, invalidReason(session), true);
-            else if (session.escape && !session.suspended && session.attempt == null) {
-                Facing now = Facing.of(session.player);
-                if (session.grace > 0) { session.grace--; session.facing = now; }
-                else if (session.facing.turned(now)) close(session.player, Reason.CLOSED, true);
-            }
+            else if (session.grace > 0) session.grace--;
         }
     }
     private Reason invalidReason(Session session) {
@@ -974,6 +1179,7 @@ final class MenuEngine implements LumaMenuApi {
         final Map<String, String> values = new LinkedHashMap<>();
         /** Template state per layout file: kept while the session moves between that file's pages. */
         final Map<String, Map<String, String>> states = new HashMap<>();
+        final Map<String, Set<String>> trusted = new HashMap<>();
         /** Loaded Skript collection lists per layout file. */
         final Map<String, Map<String, List<String>>> lists = new HashMap<>();
         /** A Skript collection is loading or saving. */
@@ -989,10 +1195,17 @@ final class MenuEngine implements LumaMenuApi {
         Object form;
         /** A presentation skipped while suspended needed new displays (page changed). */
         boolean respawn;
-        /** The shown corner Dialog may be closed by Esc: watch {@link #facing} after {@link #grace} ticks. */
+        /** The shown corner Dialog may be closed by Esc: a newly pressed key after {@link #grace} ticks closes the menu. */
         boolean escape;
         int grace;
-        Facing facing;
+        /** Movement keys last reported by the client, see {@link #keys}. */
+        int keys;
+        /** Cancels the close scheduled by {@link #closeAfterCommand}. */
+        Runnable closing;
+        /** Calibration check page: hit areas tinted, {@code calibrate} measures {@link #slot} again. */
+        boolean overlay;
+        /** The preset a calibration saves to (0: first free), or that the check page measures again. */
+        int slot;
         Session(Plugin owner, Player player, Consumer<Action> callback, Consumer<Closed> closed) {
             this.owner = owner;
             this.player = player;
@@ -1000,6 +1213,7 @@ final class MenuEngine implements LumaMenuApi {
             this.callback = Objects.requireNonNull(callback);
             this.closed = Objects.requireNonNull(closed);
             this.mode = preferences.get(player.getUniqueId());
+            this.keys = keys(player.getCurrentInput());
         }
         @Override public UUID id() { return id; }
         @Override public Player player() { return player; }
@@ -1022,7 +1236,7 @@ final class MenuEngine implements LumaMenuApi {
             base.put("page", page == null ? "" : page);
             base.put("theme", themes.effective(themeChoices.get(player.getUniqueId())));
             base.putAll(values);
-            return MenuVariables.evaluate(current, base, values, state(), new MenuVariables.Sources() {
+            return MenuVariables.evaluate(current, base, values, state(), trusted(), new MenuVariables.Sources() {
                 public String placeholders(String text) { return host.placeholders(player, text); }
                 public Object skript(String name) { return host.skript(name); }
             });
@@ -1033,6 +1247,16 @@ final class MenuEngine implements LumaMenuApi {
         Map<String, String> state() {
             Layouts.Page current = compiled.pages().get(page);
             return states.computeIfAbsent(current.family(), key -> new LinkedHashMap<>(current.state()));
+        }
+        /** State keys of this page family whose current value an operator typed into a form. */
+        Set<String> trusted() {
+            return trusted.computeIfAbsent(compiled.pages().get(page).family(), key -> new HashSet<>());
+        }
+        /** Stores a value; only an operator's typed answer may keep its {@code %placeholder%} live. */
+        void store(String key, String value, boolean typed) {
+            state(key).put(key, value);
+            if (typed && player.isOp()) trusted().add(key);
+            else trusted().remove(key);
         }
         /** The state map holding {@code key}, which the page's file must declare. */
         Map<String, String> state(String key) {
