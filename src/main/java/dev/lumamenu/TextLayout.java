@@ -187,8 +187,13 @@ final class TextLayout {
     }
 
     static Component component(String content, int color, Format format) {
+        return component(content, color, format, "");
+    }
+    /** {@code font}: a font text's resource-pack font (empty: the default font). */
+    static Component component(String content, int color, Format format, String font) {
         var lines = lines(content, color, format);
         TextComponent.Builder root = Component.text();
+        if (!font.isEmpty()) root.font(net.kyori.adventure.key.Key.key(font));
         for (int row = 0; row < (format.wraps() ? format.maxLines : lines.size()); row++) {
             if (row > 0) root.append(Component.text("\n"));
             List<Glyph> line = row < lines.size() ? lines.get(row) : List.of();

@@ -59,9 +59,11 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     private MenuCache cache;
     /** Players already offered the join calibration this login. */
     private final Set<UUID> joinPrompted = new HashSet<>();
+    private MenuBench bench;
 
     record Settings(boolean cornerClose, boolean hideWarning, int rotationHitStep, boolean calibrateOnJoin,
-                    boolean closeWithEscape, boolean hideExperienceBar, boolean replaceCrosshair, int calibrationClicks) {}
+                    boolean closeWithEscape, boolean hideExperienceBar, boolean replaceCrosshair, int calibrationClicks,
+                    boolean escapeFooter, boolean hideFocusOutline, Set<String> benchExclude) {}
 
     @Override public void onEnable() {
         try {
@@ -114,6 +116,8 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             registerInventoryGuard();
             registerRiderGuard(renderer);
             registerHudGuard();
+            bench = new MenuBench(this, engine, data, () -> settings.benchExclude());
+            bench.register();
             Bukkit.getScheduler().runTaskTimer(this, engine::tick, 1, 1);
             Bukkit.getOnlinePlayers().forEach(engine::warm);
             getLogger().info("LumaMenu ready; Paper/Leaf26.3 protocol777. Merge pack: " + pack);
@@ -128,7 +132,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         ImageCatalog images = ImageCatalog.scan(Layouts.images(layouts));
         renderer.images(images);
         return MenuResources.export(getDataFolder().toPath().resolve("resourcepack"), settings.hideWarning(),
-            settings.replaceCrosshair(), images, engine.imageModels(images));
+            settings.replaceCrosshair(), settings.hideFocusOutline(), images, engine.imageModels(images));
     }
 
     /** {@code /lumamenu reload [file]}: one layout file, or (null) every layout, the themes and config.yml. */
@@ -167,6 +171,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     public LumaMenuApi getMenuApi() { return engine; }
 
     @Override public void onDisable() {
+        if (bench != null) bench.unregister();
         if (engine != null) {
             engine.closeAll(Reason.PLUGIN_DISABLED);
             engine.shutdown();
@@ -208,8 +213,29 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 engine.files().forEach((file, pages) -> sender.sendMessage(file + ".yml: " + String.join(", ", pages)));
                 return true;
             }
+            if (sub.equals("bench") && args.length >= 2 && args[1].equalsIgnoreCase("stop")) {
+                if (!sender.hasPermission("lumamenu.admin")) throw new IllegalStateException("没有管理权限");
+                if (args.length > 3) throw new IllegalArgumentException("/lumamenu bench stop [玩家]");
+                Player target = args.length == 3 ? Bukkit.getPlayerExact(args[2]) : sender instanceof Player self ? self : null;
+                if (target == null) throw new IllegalArgumentException("/lumamenu bench stop <在线玩家>");
+                sender.sendMessage(bench.stop(target, "由 " + sender.getName() + " 停止")
+                    ? "LumaMenu：已停止 " + target.getName() + " 的基准测试。" : "LumaMenu：" + target.getName() + " 没有进行中的基准测试。");
+                return true;
+            }
             if (!(sender instanceof Player player)) throw new IllegalStateException("此操作仅供玩家使用");
             switch (sub) {
+                case "bench" -> {
+                    if (!player.hasPermission("lumamenu.admin")) throw new IllegalStateException("没有管理权限");
+                    String usage = "/lumamenu bench [间隔tick 1..20] [轮数 1..20] [同tick连开数 1.." + MenuBench.MAX_BURST + "] | stop [玩家]";
+                    if (args.length > 4) throw new IllegalArgumentException(usage);
+                    try {
+                        bench.start(player, args.length > 1 ? Integer.parseInt(args[1]) : MenuBench.DEFAULT_INTERVAL,
+                            args.length > 2 ? Integer.parseInt(args[2]) : MenuBench.DEFAULT_ROUNDS,
+                            args.length > 3 ? Integer.parseInt(args[3]) : MenuBench.DEFAULT_BURST);
+                    } catch (NumberFormatException error) {
+                        throw new IllegalArgumentException(usage);
+                    }
+                }
                 case "open" -> engine.demo(player, args.length > 1 ? args[1] : "showcase");
                 case "calibrate", "align" -> engine.calibrate(player);
                 case "close" -> engine.close(player);
@@ -266,7 +292,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                         player.sendMessage(choices);
                     }
                 }
-                default -> sender.sendMessage("/lumamenu [open <页面>|list|calibrate|close|mode|theme|debug|edit [文件]|reload [文件]|status|export]");
+                default -> sender.sendMessage("/lumamenu [open <页面>|list|calibrate|close|mode|theme|debug|edit [文件]|bench [间隔] [轮数] [连开数]|reload [文件]|status|export]");
             }
         } catch (Exception error) {
             sender.sendMessage("LumaMenu：" + (error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()));
@@ -280,7 +306,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         if (engine == null) return List.of();
         if (args.length == 1) {
             List<String> values = new ArrayList<>(List.of("open", "list", "calibrate", "close", "mode", "theme"));
-            if (sender.hasPermission("lumamenu.admin")) values.addAll(List.of("debug", "edit", "reload", "status", "export"));
+            if (sender.hasPermission("lumamenu.admin")) values.addAll(List.of("debug", "edit", "bench", "reload", "status", "export"));
             return values.stream().filter(s -> s.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("open"))
@@ -288,6 +314,11 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
         if (args.length == 2 && (args[0].equalsIgnoreCase("reload") || args[0].equalsIgnoreCase("edit"))
             && sender.hasPermission("lumamenu.admin"))
             return engine.files().keySet().stream().filter(s -> s.startsWith(args[1])).sorted().toList();
+        if (args.length == 2 && args[0].equalsIgnoreCase("bench") && sender.hasPermission("lumamenu.admin"))
+            return List.of("2", "1", "5", "stop").stream().filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+        if (args.length == 3 && args[0].equalsIgnoreCase("bench") && args[1].equalsIgnoreCase("stop")
+            && sender.hasPermission("lumamenu.admin"))
+            return Bukkit.getOnlinePlayers().stream().map(Player::getName).filter(s -> s.startsWith(args[2])).toList();
         if (args.length == 2 && args[0].equalsIgnoreCase("debug"))
             return List.of("on", "off").stream().filter(s -> s.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
         if (args.length == 2 && args[0].equalsIgnoreCase("theme"))
@@ -465,6 +496,7 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
     private final class Platform implements MenuEngine.Host {
         @Override public boolean cornerClose() { return settings.cornerClose(); }
         @Override public boolean closeWithEscape() { return settings.closeWithEscape(); }
+        @Override public boolean escapeFooter() { return settings.escapeFooter(); }
         @Override public int calibrationClicks() { return settings.calibrationClicks(); }
         @Override public void begin(Player player) {
             inventory.begin(player);
@@ -489,16 +521,21 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
                 throw new IllegalStateException("首版需要26.3客户端");
             if (!player.hasResourcePack()) throw new IllegalStateException("请先接收服务器资源包");
         }
-        @Override public void show(Player player, Component body, ClickEvent exit, int bodyWidth, boolean cornerClose,
+        @Override public void show(Player player, Component body, ClickEvent exit, int bodyWidth, MenuEngine.Close close,
                                    boolean escape) {
             var payload = (ClickEvent.Payload.Custom) exit.payload();
             Dialog dialog = Dialog.create(factory -> {
                 // A notice adds a 33-high footer but drops the list's empty grid and its 10 spacing, so with two fewer
-                // body rows its footer+content height equals the corner list's and the body sits at the same Y.
-                DialogType type = cornerClose ? DialogType.dialogList(RegistrySet.keySet(RegistryKey.DIALOG, List.of())).build()
-                    : DialogType.notice(ActionButton.builder(Component.text("关闭")).width(60)
-                        .action(DialogAction.customClick(payload.key(), payload.nbt())).build());
-                factory.empty().base(DialogBase.builder(Component.text(" ")).pause(false).canCloseWithEscape(!cornerClose || escape)
+                // body rows its footer+content height equals the corner list's and the body sits at the same Y. The
+                // hidden footer's button is blank and 1 wide: it only carries Esc.
+                var action = DialogAction.customClick(payload.key(), payload.nbt());
+                DialogType type = switch (close) {
+                    case CORNER -> DialogType.dialogList(RegistrySet.keySet(RegistryKey.DIALOG, List.of())).build();
+                    case NATIVE -> DialogType.notice(ActionButton.builder(Component.text("关闭")).width(60).action(action).build());
+                    case HIDDEN -> DialogType.notice(ActionButton.builder(Component.empty()).width(1).action(action).build());
+                };
+                factory.empty().base(DialogBase.builder(Component.text(" ")).pause(false)
+                    .canCloseWithEscape(close.footer() || escape)
                     .afterAction(DialogBase.DialogAfterAction.NONE)
                     .body(List.of(DialogBody.plainMessage(body, bodyWidth))).build())
                     .type(type);
@@ -542,9 +579,11 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             };
             var options = net.kyori.adventure.text.event.ClickCallback.Options.builder()
                 .uses(1).lifetime(java.time.Duration.ofHours(1)).build();
-            List<io.papermc.paper.registry.data.dialog.input.DialogInput> inputs = form.inputs().stream()
-                .map(input -> {
-                    var text = io.papermc.paper.registry.data.dialog.input.DialogInput.text(input.key(),
+            // Layout field keys may hold '-', which vanilla input names (letters, digits, '_') refuse.
+            List<io.papermc.paper.registry.data.dialog.input.DialogInput> inputs = java.util.stream.IntStream
+                .range(0, form.inputs().size()).mapToObj(index -> {
+                    var input = form.inputs().get(index);
+                    var text = io.papermc.paper.registry.data.dialog.input.DialogInput.text(MenuEngine.inputName(index),
                         Component.text(input.label())).initial(input.initial()).maxLength(input.maxLength())
                         .width(input.width());
                     if (input.multiline()) text.multiline(
@@ -556,9 +595,9 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
             var submit = ActionButton.builder(Component.text(form.submit()))
                 .action(DialogAction.customClick((view, audience) -> once.accept(() -> {
                     Map<String, String> values = new LinkedHashMap<>();
-                    for (var input : form.inputs()) {
-                        String text = view.getText(input.key());
-                        if (text != null) values.put(input.key(), text);
+                    for (int i = 0; i < form.inputs().size(); i++) {
+                        String text = view.getText(MenuEngine.inputName(i));
+                        if (text != null) values.put(form.inputs().get(i).key(), text);
                     }
                     submitted.accept(values);
                 }), options)).build();
@@ -677,13 +716,27 @@ public final class LumaMenuPlugin extends JavaPlugin implements Listener, TabCom
 
     static Settings readSettings(org.bukkit.configuration.ConfigurationSection config) {
         for (String key : List.of("corner-close", "hide-warning", "calibrate-on-join", "close-with-escape",
-                "hide-experience-bar", "replace-crosshair"))
+                "hide-experience-bar", "replace-crosshair", "escape-footer", "hide-focus-outline"))
             if (config.contains(key) && !config.isBoolean(key))
                 throw new IllegalArgumentException(key + "需要true/false");
         return new Settings(config.getBoolean("corner-close", true), config.getBoolean("hide-warning", true),
             HitGeometry.step(config.get("rotation-hit-step")), config.getBoolean("calibrate-on-join", true),
             config.getBoolean("close-with-escape", true), config.getBoolean("hide-experience-bar", true),
-            config.getBoolean("replace-crosshair", false), clicks(config));
+            config.getBoolean("replace-crosshair", false), clicks(config), config.getBoolean("escape-footer", true),
+            config.getBoolean("hide-focus-outline", true), benchExclude(config));
+    }
+    /** Layout file IDs {@code /lumamenu bench} skips (menus players do not open from the menu, e.g. block UIs). */
+    private static Set<String> benchExclude(org.bukkit.configuration.ConfigurationSection config) {
+        if (!config.contains("bench-exclude")) return Set.of();
+        if (!config.isList("bench-exclude")) throw new IllegalArgumentException("bench-exclude需要布局文件名列表");
+        Set<String> files = new LinkedHashSet<>();
+        for (Object value : config.getList("bench-exclude", List.of())) {
+            if (!(value instanceof String file)) throw new IllegalArgumentException("bench-exclude需要布局文件名列表");
+            String id = file.replaceFirst("\\.yml$", "");
+            Layouts.checkId(id);
+            files.add(id);
+        }
+        return Set.copyOf(files);
     }
     private static int clicks(org.bukkit.configuration.ConfigurationSection config) {
         Object value = config.get("calibration-clicks", Calibration.DEFAULT_CLICKS);

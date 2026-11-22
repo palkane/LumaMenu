@@ -9,10 +9,19 @@ corner-close: true
 # corner-close: false 的原生关闭页本身就支持 Esc，不受此项影响。修改后执行 /lumamenu reload。
 close-with-escape: true
 
+# 右上角 × 页面允许 Esc 时，若该玩家此刻可点的控件都不在画布最后两行（Y≥162），改用原生关闭底栏，
+# 底栏按钮为空白、1 宽（几乎看不见），Esc 会立即通知服务器关闭菜单，不再等按移动键（默认开启）。
+# 代价是这两行不能点（画面照常）；最后两行有可点控件的页面仍按上面的无底栏方式。修改后执行 /lumamenu reload。
+escape-footer: true
+
 # 导出资源包时隐藏顶部警告图标，默认开启；修改后 reload/export 并按 CE 流程重新合包。
 # 覆盖同资源包内所有 Dialog 的三个警告图标，原生点击、悬停提示和顶部占位仍存在。
-# 不修改共用 GUI shader，避免隐藏白框时影响其他界面。
 hide-warning: true
+
+# 导出资源包时隐藏菜单正文被选中时的白色焦点框（默认开启）：GUI 颜色着色器只丢弃恰好落在菜单正文边框位置的纯白线条，
+# 位置按当前界面宽高推算，其他界面的焦点框不受影响；定位后改了窗口大小或 GUI 缩放、旧版定位的玩家仍会看到白框。
+# 修改后 reload/export 并按 CE 流程重新合包。
+hide-focus-outline: true
 
 # 旋转节点（含父组旋转）的点击轮廓精度，支持 1、2、4、8、16，默认 2 个最小点击单位。
 # 越大阶梯越粗、通常字形/发包越少；轮廓相交的整格可点击，边缘可能向外多出不足一格。
@@ -41,3 +50,7 @@ hide-experience-bar: true
 # U+E000 为准星，U+E001 回退准星的字宽，不改变动作栏宽度；不要加粗或带阴影色。资源包着色器把它画在屏幕正中，
 # 菜单打开期间插件从该玩家收到的动作栏里删掉这段文字，准星随之消失。修改后 reload 并按资源包流程重新合包。
 replace-crosshair: false
+
+# /lumamenu bench 跳过的布局文件（文件名，不带 .yml），例如不经菜单打开的方块/建筑界面：bench-exclude: [colonies]
+# 修改后执行 /lumamenu reload。
+bench-exclude: []

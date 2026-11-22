@@ -39,7 +39,12 @@ final class Transforms {
      */
     static Vector3f center(Layouts.Visual v) {
         return switch (v.kind()) {
-            case "text" -> new Vector3f(TEXT_PIXEL, .125f * TextLayout.lineCount(v.content(), v.text()), 0);
+            // A TextDisplay's block is centred one pixel right and rests on the origin; its first line's top is 9 pixels
+            // up and a glyph's top 7 - ascent below that. Plain text lines are boxed 10 high from 1 pixel above that
+            // top; a font text's box top is where ascent 0 puts a glyph's top (2 pixels up), its height as declared.
+            case "text" -> v.source().isEmpty()
+                ? new Vector3f(TEXT_PIXEL, .125f * TextLayout.lineCount(v.content(), v.text()), 0)
+                : new Vector3f(TEXT_PIXEL, (float) (TEXT_PIXEL * (2 - v.height() * 4 / v.size())), 0);
             case "plane" -> new Vector3f(TEXT_PIXEL / 2, .125f, 0);
             case "glyph" -> new Vector3f((float) ((v.glyph().left() + v.glyph().right()) / 2 * TEXT_PIXEL),
                 (float) ((v.glyph().bottom() + v.glyph().top()) / 2 * TEXT_PIXEL), 0);

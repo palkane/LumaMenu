@@ -1136,18 +1136,22 @@ public final class MenuChecks {
         client.online = true;
         engine.measure(client.player);
         var standardProbe = host.body(client.id);
-        var standardExit = clickAt(standardProbe, 445, 4);
-        engine.click(client.player, clickAt(standardProbe, 330, 4));
+        check(noClickAt(standardProbe, 445, 4) && noClickAt(standardProbe, 449, 4)
+            && !GsonComponentSerializer.gson().serialize(standardProbe).contains("lumamenu:chrome"),
+            "the calibration probe draws no Dialog X");
+        var standardRange = clickAt(standardProbe, 330, 4);
+        engine.click(client.player, standardRange);
         var expandedProbe = host.body(client.id);
         check(expandedProbe != standardProbe
             && glyphs(expandedProbe).stream().filter("newline"::equals).count() == Calibration.PROBE_ROWS - 1
             && GsonComponentSerializer.gson().serialize(expandedProbe).contains("当前定位范围：2/"),
             "the range action re-sends the same 16-row probe for the next range");
-        engine.click(client.player, standardExit);
+        engine.click(client.player, standardRange);
         check(host.body(client.id) == expandedProbe && renderer.active(client.id), "changing range invalidates the old actions");
-        String cancel = clickAt(expandedProbe, 445, 4);
-        engine.click(client.player, cancel);
-        check(align.get(client.id).equals(MAPPING) && !renderer.active(client.id), "Dialog X calibration cancellation preserves previous mapping");
+        check(noClickAt(expandedProbe, 445, 4), "the re-sent probe has no Dialog X either");
+        check(!host.escapes.getLast(), "the calibration Dialog cannot be closed with Esc");
+        engine.close(client.player);
+        check(align.get(client.id).equals(MAPPING) && !renderer.active(client.id), "a closed calibration preserves the previous mapping");
         engine.measure(client.player);
         for (int target = 0; target < 4; target++) {
             float previousSize = Float.POSITIVE_INFINITY;
@@ -1812,6 +1816,38 @@ public final class MenuChecks {
         check(sent.size() == 1 && "Kai".equals(owner.apply(((WrapperPlayServerEntityMetadata) sent.getFirst()).getEntityMetadata())),
             "a changed owner resends only that head");
         tints();
+        fontText();
+    }
+
+    /** A text node in a resource-pack font: one line, declared box, glyph tops measured from the box top. */
+    private static void fontText() throws Exception {
+        var page = Layouts.parse("font", yamlOf("""
+            id: font
+            frontend:
+              pic: {type: text, font: 'ns:pixels', content: '{pic}', width: 84, height: 84, size: 8, offset: {x: 54, y: 108}}
+              half: {type: text, font: 'ns:pixels', content: x, width: 40, height: 20, size: 4, offset: {x: 54, y: 30}}
+            """)).get("font");
+        Layouts.Visual pic = page.visuals().stream().filter(v -> v.id().equals("pic")).findFirst().orElseThrow();
+        Layouts.Visual half = page.visuals().stream().filter(v -> v.id().equals("half")).findFirst().orElseThrow();
+        check(pic.kind().equals("text") && pic.source().equals("ns:pixels"), "a font text keeps its font");
+        var component = TextLayout.component("&#123456\uE000", 0xFFFFFF, pic.text(), pic.source());
+        check(component.font() != null && component.font().asString().equals("ns:pixels")
+            && component.children().getFirst().color().value() == 0x123456, "the font goes on the root, colors on the runs");
+        check(TextLayout.component("a", 0xFFFFFF, pic.text()).font() == null, "plain text keeps the default font");
+        // Box top at entity-local y 2 pixels (where ascent 0 puts a glyph's top), the box hanging below it.
+        var center = Transforms.center(pic);
+        var size = Transforms.halfSize(pic);
+        near(center.x, Transforms.TEXT_PIXEL, "a font text is centred like any TextDisplay block");
+        near(Math.round((center.y + size.y) / Transforms.TEXT_PIXEL * 1e4) / 1e4, 2, "the box top is where ascent 0 puts a glyph's top");
+        near(Math.round(size.y * 2 / Transforms.TEXT_PIXEL * 1e4) / 1e4, 84, "an 84-high box at size 8 is 84 font pixels");
+        near(Math.round(Transforms.halfSize(half).y * 2 / Transforms.TEXT_PIXEL * 1e4) / 1e4, 40, "at size 4 a 20-high box is 40 font pixels");
+        near(Math.round((Transforms.center(half).y + Transforms.halfSize(half).y) / Transforms.TEXT_PIXEL * 1e4) / 1e4, 2, "at any size");
+        for (String bad : List.of(
+                "{t: {type: text, font: 'ns:pixels', content: x, width: 10}}",
+                "{t: {type: text, font: 'Bad Font', content: x, width: 10, height: 10}}",
+                "{t: {type: text, font: 'ns:pixels', content: x, width: 10, height: 10, line-width: 10, max-lines: 1}}",
+                "{t: {type: button, font: 'ns:pixels', content: x}}"))
+            rejects(() -> parse("id: t\nfrontend: " + bad), "font texts are one-line text nodes with a box: " + bad);
     }
 
     private static void tints() throws Exception {
@@ -2165,6 +2201,8 @@ public final class MenuChecks {
             check(engine.calibrated(client.player) && MenuEngine.CHECK_PAGE.equals(engine.page(client.player))
                 && GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("lumamenu:hit_debug"),
                 clicks + " clicks per corner finish into the check page with the hit areas tinted");
+            check(!host.escapes.getLast() && !GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("lumamenu:chrome"),
+                "the check page has neither Esc nor a Dialog X");
             engine.close(client.player);
             check(engine.activeCount() == 0 && !renderer.active(client.id), "closing the check page cleans up");
         }
@@ -2394,6 +2432,12 @@ public final class MenuChecks {
 
     /** Forms asked in chat like ArcMenu's catcher: the menu is put away, answers land in state or the API callback. */
     private static void forms() throws Exception {
+        Set<String> names = new HashSet<>();
+        for (int i = 0; i < 64; i++) {
+            String name = MenuEngine.inputName(i);
+            check(name.chars().allMatch(c -> Character.isLetterOrDigit(c) || c == '_') && names.add(name),
+                "native input names are distinct and valid for vanilla (letters, digits, _), whatever the layout keys");
+        }
         Path dir = Files.createTempDirectory(root, "forms-"), layouts = dir.resolve("layouts");
         Files.createDirectories(layouts);
         Files.writeString(layouts.resolve("askme.yml"), """
@@ -2571,6 +2615,15 @@ public final class MenuChecks {
                 corner-close: false
                 frontend:
                   t: {type: text, content: x, offset: {x: 100, y: 60}}
+              low:
+                frontend:
+                  t: {type: button, content: x, width: 40, height: 20, offset: {x: 100, y: 60}, actions: 'tell: hi'}
+                  b: {type: button, content: y, width: 40, height: 16, offset: {x: 100, y: 170}, actions: 'tell: low'}
+                  s: {type: button, content: z, width: 40, height: 16, offset: {x: 200, y: 170}, permission: staff, actions: 'tell: s'}
+              hover:
+                frontend:
+                  t: {type: button, content: x, width: 40, height: 20, offset: {x: 100, y: 60}, actions: 'tell: hi'}
+                  h: {type: text, content: y, offset: {x: 100, y: 170}, tooltip: only a hint}
             """);
         Files.writeString(layouts.resolve("unset.yml"), """
             schema-version: 3
@@ -2590,9 +2643,26 @@ public final class MenuChecks {
         var defaults = LumaMenuPlugin.readSettings(new org.bukkit.configuration.file.YamlConfiguration());
         check(defaults.hideExperienceBar() && !defaults.replaceCrosshair(),
             "the experience bar is hidden by default; the crosshair is only replaced on request");
+        check(defaults.escapeFooter() && defaults.hideFocusOutline(), "escape-footer and hide-focus-outline default on");
+        var footerOff = new org.bukkit.configuration.file.YamlConfiguration();
+        footerOff.set("escape-footer", false);
+        footerOff.set("hide-focus-outline", false);
+        check(!LumaMenuPlugin.readSettings(footerOff).escapeFooter() && !LumaMenuPlugin.readSettings(footerOff).hideFocusOutline(),
+            "escape-footer and hide-focus-outline can be turned off");
+        footerOff.set("escape-footer", "yes");
+        rejects(() -> LumaMenuPlugin.readSettings(footerOff), "escape-footer needs true/false");
         var hudOff = new org.bukkit.configuration.file.YamlConfiguration();
         hudOff.set("hide-experience-bar", "yes");
         rejects(() -> LumaMenuPlugin.readSettings(hudOff), "hide-experience-bar needs true/false");
+        check(defaults.benchExclude().isEmpty(), "bench-exclude defaults to no layout files");
+        var bench = new org.bukkit.configuration.file.YamlConfiguration();
+        bench.set("bench-exclude", List.of("colonies", "shop.yml"));
+        check(LumaMenuPlugin.readSettings(bench).benchExclude().equals(Set.of("colonies", "shop")),
+            "bench-exclude lists layout files, with or without .yml");
+        bench.set("bench-exclude", "colonies");
+        rejects(() -> LumaMenuPlugin.readSettings(bench), "bench-exclude needs a list");
+        bench.set("bench-exclude", List.of("../x"));
+        rejects(() -> LumaMenuPlugin.readSettings(bench), "bench-exclude rejects invalid file names");
         rejects(() -> parse("id: test\nclose-with-escape: yes please\nfrontend: {}"), "close-with-escape needs true/false");
         Client client = new Client();
         Owner owner = new Owner();
@@ -2649,6 +2719,38 @@ public final class MenuChecks {
         check(!engine.openPage(client.player, "nope") && host.messages.size() == messages + 1
                 && "esc".equals(engine.page(client.player)), "an unknown page fails with a message and keeps the menu");
         engine.close(client.player);
+        check(host.closes.getLast() == MenuEngine.Close.CORNER, "escape-footer off: Esc pages keep the footerless list");
+        host.corner = true;
+        host.escapeFooter = true;
+        var footed = engine.open(owner.plugin, client.player, "esc", Map.of(), a -> {}, c -> {});
+        check(host.closes.getLast() == MenuEngine.Close.HIDDEN && host.escapes.getLast()
+                && net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                .serialize(host.body(client.id)).split("\n", -1).length == align.frame(client.id).rows() - 2,
+            "escape-footer: an Esc page with nothing clickable in its last two rows gets the hidden footer, two rows shorter");
+        for (int i = 0; i < 10; i++) engine.tick();
+        engine.input(client.player, keys(""));
+        engine.input(client.player, keys("F"));
+        check(footed.active(), "under the hidden footer keys no longer close: Esc reports itself");
+        engine.click(client.player, identifier(host.exits.get(client.id)));
+        check(!footed.active() && host.closedEvents.getLast().equals("esc:CLOSED"), "Esc (the footer action) closes at once");
+        var low = engine.open(owner.plugin, client.player, "low", Map.of(), a -> {}, c -> {});
+        check(host.closes.getLast() == MenuEngine.Close.CORNER && host.escapes.getLast(),
+            "a page with a clickable control in its last two rows keeps the footerless list");
+        for (int i = 0; i < MenuEngine.ESCAPE_GRACE_TICKS; i++) engine.tick();
+        engine.input(client.player, keys("F"));
+        check(!low.active(), "and keeps the movement-key Esc check");
+        engine.open(owner.plugin, client.player, "hover", Map.of(), a -> {}, c -> {});
+        check(host.closes.getLast() == MenuEngine.Close.HIDDEN
+                && !GsonComponentSerializer.gson().serialize(host.body(client.id)).contains("only a hint"),
+            "a hover-only area in the last two rows does not keep the footer away; it just loses its tooltip");
+        engine.open(owner.plugin, client.player, "plain", Map.of(), a -> {}, c -> {});
+        check(host.closes.getLast() == MenuEngine.Close.CORNER && !host.escapes.getLast(),
+            "close-with-escape: false pages never get the footer (Esc would close them)");
+        engine.close(client.player);
+        engine.open(owner.plugin, client.player, "native", Map.of(), a -> {}, c -> {});
+        check(host.closes.getLast() == MenuEngine.Close.NATIVE, "corner-close: false keeps the visible close button");
+        engine.close(client.player);
+        host.escapeFooter = false;
         var owned = engine.open(owner.plugin, client.player, "esc", Map.of(), a -> {}, c -> {});
         for (int i = 0; i < MenuEngine.ESCAPE_GRACE_TICKS; i++) engine.tick();
         int shows = host.corners.size();
@@ -2884,23 +2986,25 @@ public final class MenuChecks {
             && host.messages.stream().filter("open b"::equals).count() == 1, "refresh re-presents without firing open events");
         click.accept(100, 50);
         check("a".equals(handle.page()), "back returns to the previous page");
-        int hidesBefore = host.hides;
+        int hidesBefore = host.hides, scheduledBefore = host.scheduled.size();
+        boolean[] upDuringConsole = new boolean[1];
+        host.onConsole = command -> upDuringConsole[0] = handle.active() && host.hides == hidesBefore;
         click.accept(300, 120);
-        check(handle.active() && host.consoles.equals(List.of("say Offline")) && host.hides == hidesBefore,
-            "console runs while the menu is still up");
-        click.accept(100, 155);
-        check("a".equals(handle.page()), "no clicks once the menu is closing");
-        host.runLater();
+        host.onConsole = command -> {};
+        check(upDuringConsole[0] && host.consoles.equals(List.of("say Offline")), "console runs while the menu is still up");
         check(!handle.active() && host.messages.getLast().equals("close a") && host.hides == hidesBefore + 1
-            && host.closedEvents.getLast().equals("a:CLOSED") && closed.getLast().reason() == LumaMenuApi.Reason.CLOSED,
-            "console closes the menu a moment later; close event and Bukkit event fire");
+            && host.closedEvents.getLast().equals("a:CLOSED") && closed.getLast().reason() == LumaMenuApi.Reason.CLOSED
+            && host.scheduled.size() == scheduledBefore,
+            "console closes the menu right after it runs, nothing scheduled; close event and Bukkit event fire");
         check(engine.page(client.player) == null && !engine.refresh(client.player), "closed menus report no page");
         var second = open.get();
+        boolean[] upDuringCommand = new boolean[1];
+        host.onCommand = command -> upDuringCommand[0] = second.active();
         click.accept(100, 120);
-        check(second.active() && host.commands.getLast().equals("spawn"), "command runs before the menu closes");
-        host.runLater();
+        host.onCommand = command -> {};
+        check(upDuringCommand[0] && host.commands.getLast().equals("spawn"), "command runs before the menu closes");
         check(!second.active() && closed.getLast().reason() == LumaMenuApi.Reason.CLOSED,
-            "a command that opens no LumaMenu closes it after the grace ticks");
+            "a command that opens no LumaMenu closes it at once");
         // A command opening another LumaMenu takes the session over: no close, no camera/HUD restart.
         int begins = host.begins, ends = host.ends, hides = host.hides;
         List<LumaMenuApi.Closed> later = new ArrayList<>();
@@ -2916,7 +3020,7 @@ public final class MenuChecks {
             && closed.getLast().reason() == LumaMenuApi.Reason.REPLACED && host.closedEvents.getLast().equals("a:REPLACED"),
             "a command that opens a LumaMenu hands the open menu over without closing it");
         host.runLater();
-        check(opened[0].active() && host.ends == ends, "the takeover cancels the pending close");
+        check(opened[0].active() && host.ends == ends, "the menu taken over by the command stays open");
         check(opened[0].back() && "a".equals(opened[0].page()) && opened[0].active(),
             "same owner and file: back returns to the page the command was clicked on");
         Owner stranger = new Owner();
@@ -3189,6 +3293,22 @@ public final class MenuChecks {
         near(new Vector3f((float) (t.getX() + rider2.x), (float) (t.getY() + rider2.y), (float) (t.getZ() + rider2.z))
             .distance(expectedOrigin(prepared.getFirst())), 0, "scaled rider offset is removed from the pose exactly");
         scaled.close(tall.player);
+        List<PacketWrapper<?>> poseSent = new ArrayList<>();
+        var pose = new java.util.concurrent.atomic.AtomicReference<>(new DisplayRenderer.Body(1.5f, 1.27f));
+        var posed = new DisplayRenderer((p, packet) -> poseSent.add(packet), player -> pose.get());
+        var crouched = new Client();
+        posed.show(crouched.player, prepared, Map.of());
+        pose.set(DisplayRenderer.Body.standing(1));
+        poseSent.clear();
+        posed.show(crouched.player, prepared, Map.of("status", "again"));
+        check(rigHeights(poseSent).equals(List.of(-1.5f, (float) ((double) 1.27f / DisplayRenderer.EYE_RATIO))),
+            "page changes keep the opening pose after the Dialog makes a crouching viewer stand up");
+        posed.close(crouched.player);
+        poseSent.clear();
+        posed.show(crouched.player, prepared, Map.of());
+        check(rigHeights(poseSent).equals(List.of(-1.8f, (float) ((double) 1.62f / DisplayRenderer.EYE_RATIO))),
+            "a menu opened again reads the current pose");
+        posed.close(crouched.player);
         sent.clear();
         renderer.show(first.player, prepared, Map.of("status", "again"));
         check(sent.stream().noneMatch(packet -> packet instanceof WrapperPlayServerCamera view && view.getCameraId() == 4321),
@@ -3245,6 +3365,16 @@ public final class MenuChecks {
             renderer.close(client.player);
         }
         return result;
+    }
+
+    /** Interaction heights (metadata 9) of the foot then camera link, in send order. */
+    static List<Float> rigHeights(List<PacketWrapper<?>> sent) {
+        var rig = sent.stream().filter(packet -> packet instanceof WrapperPlayServerSpawnEntity spawn
+            && spawn.getEntityType() == EntityTypes.INTERACTION)
+            .map(packet -> ((WrapperPlayServerSpawnEntity) packet).getEntityId()).toList();
+        return sent.stream().filter(packet -> packet instanceof WrapperPlayServerEntityMetadata metadata
+            && rig.contains(metadata.getEntityId()))
+            .map(packet -> (Float) value(((WrapperPlayServerEntityMetadata) packet).getEntityMetadata(), 9)).toList();
     }
 
     /** Mock players have no server attribute registry; production reads the SCALE attribute. */
@@ -3850,7 +3980,7 @@ public final class MenuChecks {
     private static void resources() throws Exception {
         Path evidence = Path.of("build/native-evidence");
         MenuResources.write(evidence.resolve("pack"), true);
-        MenuResources.write(evidence.resolve("crosshair-pack"), true, true, ImageCatalog.EMPTY, List.of());
+        MenuResources.write(evidence.resolve("crosshair-pack"), true, true, true, ImageCatalog.EMPTY, List.of());
         Path zip = MenuResources.export(root.resolve("export"), true);
         try (ZipFile archive = new ZipFile(zip.toFile())) {
             check(archive.getEntry("pack.mcmeta") != null && archive.getEntry("assets/lumamenu/items/target.json") != null
@@ -3887,8 +4017,9 @@ public final class MenuChecks {
                 && !e.getName().equals(background)
                 && !e.getName().matches("assets/minecraft/textures/gui/sprites/dialog/warning_button(_disabled|_highlighted)?\\.png")),
                 "only dedicated warning icons and previously approved background are overridden");
-            check(archive.stream().noneMatch(e -> e.getName().startsWith("assets/minecraft/shaders/core/gui.")),
-                "no global GUI shader filtering that affects other interfaces");
+            check(archive.getEntry("assets/minecraft/shaders/core/gui.vsh") != null
+                    && archive.getEntry("assets/minecraft/shaders/core/gui.fsh") == null,
+                "hide-focus-outline (default) exports only gui.vsh, whose filter matches menu body outlines alone");
             for (String shader : List.of("item", "entity", "text", "position_color", "glint"))
                 check(archive.getEntry("assets/minecraft/shaders/core/" + shader + ".vsh") != null,
                     "enhanced menu exports matching shader pipeline " + shader);
@@ -3927,6 +4058,11 @@ public final class MenuChecks {
             check(archive.stream().noneMatch(e -> e.getName().contains("warning_button")),
                 "disabling hide-warning removes overrides rather than leaving stale textures");
         }
+        MenuResources.export(root.resolve("export"), true, false, false, ImageCatalog.EMPTY, List.of());
+        try (ZipFile archive = new ZipFile(zip.toFile())) {
+            check(archive.stream().noneMatch(e -> e.getName().startsWith("assets/minecraft/shaders/core/gui.")),
+                "hide-focus-outline off leaves the vanilla GUI shader");
+        }
         try (ZipFile archive = new ZipFile(zip.toFile())) {
             check(archive.getEntry("assets/minecraft/textures/gui/sprites/hud/crosshair.png") == null,
                 "the vanilla crosshair is kept unless replace-crosshair is on");
@@ -3945,7 +4081,7 @@ public final class MenuChecks {
                 && shader.contains("ivec3(" + (color >> 16) / 4 + ", " + (color >> 8 & 255) / 4 + ", " + (color & 255) / 4 + ")"),
                 "the GUI text shader recognises the crosshair colour and its shadow");
         }
-        MenuResources.export(root.resolve("export"), true, true, ImageCatalog.EMPTY, List.of());
+        MenuResources.export(root.resolve("export"), true, true, true, ImageCatalog.EMPTY, List.of());
         try (ZipFile archive = new ZipFile(zip.toFile())) {
             var hidden = ImageIO.read(archive.getInputStream(archive.getEntry("assets/minecraft/textures/gui/sprites/hud/crosshair.png")));
             boolean clear = hidden.getWidth() == 15 && hidden.getHeight() == 15;
@@ -3998,6 +4134,10 @@ public final class MenuChecks {
             }
         }
         throw new AssertionError("no encoded click at " + px + "," + py);
+    }
+    private static boolean noClickAt(Component body, int px, int py) {
+        try { clickAt(body, px, py); return false; }
+        catch (AssertionError expected) { return true; }
     }
     /** Glyph-by-glyph rendering input: effective font, codepoint, click and hover per character. */
     private static List<String> glyphs(Component body) {
@@ -4257,10 +4397,11 @@ public final class MenuChecks {
         final Map<UUID, Integer> bodyWidths = new HashMap<>();
         final List<Throwable> errors = new ArrayList<>();
         int hides, begins, ends, clicks = 3;
-        boolean corner = true, failShow, lookAllowed;
+        boolean corner = true, failShow, lookAllowed, escapeFooter;
         public int calibrationClicks() { return clicks; }
         final List<Boolean> looks = new ArrayList<>();
         public boolean cornerClose() { return corner; }
+        public boolean escapeFooter() { return escapeFooter; }
         public void begin(Player player) { begins++; }
         public void end(Player player) { ends++; }
         public boolean look(Player player, boolean down) { looks.add(down); return down && lookAllowed; }
@@ -4272,10 +4413,12 @@ public final class MenuChecks {
             sounds = new ArrayList<>(), closedEvents = new ArrayList<>();
         final List<Runnable> scheduled = new ArrayList<>();
         final List<Boolean> escapes = new ArrayList<>();
-        public void show(Player player, Component body, ClickEvent exit, int bodyWidth, boolean cornerClose, boolean escape) {
+        final List<MenuEngine.Close> closes = new ArrayList<>();
+        public void show(Player player, Component body, ClickEvent exit, int bodyWidth, MenuEngine.Close close, boolean escape) {
             if (failShow) throw new IllegalStateException("presentation failed");
             escapes.add(escape);
-            corners.add(cornerClose);
+            corners.add(close == MenuEngine.Close.CORNER);
+            closes.add(close);
             bodies.put(player.getUniqueId(), body);
             exits.put(player.getUniqueId(), exit);
             bodyWidths.put(player.getUniqueId(), bodyWidth);
@@ -4285,7 +4428,8 @@ public final class MenuChecks {
         /** Runs inside {@link #command}, e.g. a script opening another menu. */
         java.util.function.Consumer<String> onCommand = command -> {};
         public void command(Player player, String command) { commands.add(command); onCommand.accept(command); }
-        public void console(String command) { consoles.add(command); }
+        java.util.function.Consumer<String> onConsole = command -> {};
+        public void console(String command) { consoles.add(command); onConsole.accept(command); }
         final List<MenuEngine.PresetView> presetViews = new ArrayList<>();
         final List<Consumer<MenuEngine.PresetChoice>> presetChoices = new ArrayList<>();
         public void presets(Player player, MenuEngine.PresetView view, Consumer<MenuEngine.PresetChoice> chosen) {

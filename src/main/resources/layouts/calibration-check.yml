@@ -1,6 +1,7 @@
 schema-version: 3
 id: calibration-check
 title: 定位检查
+close-with-escape: false
 # Opened by LumaMenu right after a calibration, with the hit-area overlay on: the tinted blocks are where clicks land
 # and should cover each box exactly. "重新定位" measures the same preset again. The engine opens this page by its ID,
 # so keep the ID; boxes sit at the canvas corners, edge middles and centre, where a wrong mapping shows most.

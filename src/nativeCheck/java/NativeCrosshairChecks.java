@@ -104,6 +104,18 @@ final class NativeCrosshairChecks {
             }
         check(compile(pack, ours.replace("gl_VertexIndex", "gl_VertexID"), "IS_GUI", false) != null,
             "fault control: gl_VertexID is not available to the client's Vulkan-style GLSL");
+        String gui = Files.readString(pack.resolve("assets/minecraft/shaders/core/gui.vsh"));
+        String vanillaGui;
+        try (var in = NativeCrosshairChecks.class.getClassLoader().getResourceAsStream("assets/minecraft/shaders/core/gui.vsh")) {
+            vanillaGui = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        check(!gui.contains("#moj_import"), "gui.vsh stays import-free (the client compiles it before resource packs load)");
+        for (boolean zeroToOne : new boolean[]{false, true}) {
+            String error = compile(pack, vanillaGui, null, zeroToOne);
+            check(error == null, "vanilla gui.vsh compiles (zeroToOne=" + zeroToOne + "): " + error);
+            error = compile(pack, gui, null, zeroToOne);
+            check(error == null, "LumaMenu gui.vsh compiles like the client (zeroToOne=" + zeroToOne + "): " + error);
+        }
     }
 
     private static String compile(Path pack, String source, String define, boolean zeroToOne) {

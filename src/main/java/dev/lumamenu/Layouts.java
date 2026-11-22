@@ -27,7 +27,7 @@ final class Layouts {
         "width", "height", "size", "thickness", "color", "content", "source", "item-model",
         "rotation", "stretch", "bounds", "actions", "tooltip", "permission", "clickable", "style", "step",
         "alignment", "line-width", "max-lines", "opacity", "tintable", "reuse-texture", "atlas", "visible-if",
-        "header", "selected", "variant", "icon", "icon-size", "value", "profile", "tints");
+        "header", "selected", "variant", "icon", "icon-size", "value", "profile", "tints", "font");
     /** Node types drawn from the file's theme ({@link Themes}); a {@code button} joins them with {@code style: theme}. */
     static final Set<String> THEMED = Set.of("panel", "card", "tab", "badge", "bar");
     /** {@code plane}: TextDisplay background; {@code image}: flat item model; {@code glyph}: CraftEngine font image. */
@@ -953,6 +953,7 @@ final class Layouts {
             }
             String content = node.getString("content", "");
             double size = (modelSource == null ? number(node, "size", 8, 1, 64) : 8) * scale;
+            if (node.contains("font") && !type.equals("text")) throw new IllegalArgumentException(id + "：font仅用于text");
             TextLayout.Format format = textFormat(node, type, size / scale);
             int lines = TextLayout.lineCount(content, format);
             double defaultWidth = switch (type) {
@@ -1093,9 +1094,11 @@ final class Layouts {
                     visuals.add(tinted.apply(visual(id + "/right", "plane", x + (width - t) / 2, y, z, t, height - t * 2, size, color, "", "", "", 0, 0, 0, 1, 1, 1)));
                 }
                 case "text" -> {
+                    String font = textFont(id, node);
                     TextLayout.validate(content, color, format);
                     box(x, y, width, height);
-                    visuals.add(tinted.apply(new Visual(id, "text", x, y, z, width, height, size, color, content, "", "",
+                    // A font text keeps its font in the otherwise unused source field (cache format unchanged).
+                    visuals.add(tinted.apply(new Visual(id, "text", x, y, z, width, height, size, color, content, font, "",
                         0, 0, 0, 1, 1, 1, List.of(), format)));
                 }
                 case "button" -> {
@@ -1524,6 +1527,22 @@ final class Layouts {
         if (value instanceof List<?> list && list.stream().allMatch(String.class::isInstance))
             return String.join("\n", list.stream().map(String.class::cast).toList());
         throw new IllegalArgumentException("tooltip使用字符串或字符串列表");
+    }
+    /**
+     * {@code font: ns:id} on a text node: one line in that resource-pack font, for glyph pictures. The box must be
+     * declared and the content's total advance should equal its width in font pixels; a glyph's top sits its ascent
+     * above the box top (ascent 0 at the top, negative further down). See {@link Transforms#center}.
+     */
+    private static String textFont(String id, ConfigurationSection node) {
+        if (!node.contains("font")) return "";
+        String font = node.getString("font", "");
+        if (!font.matches("[a-z0-9_.-]+:[a-z0-9/._-]+")) throw new IllegalArgumentException(id + "：font使用'命名空间:路径'");
+        if (!node.contains("width") || !node.contains("height"))
+            throw new IllegalArgumentException(id + "：font文字需要width与height");
+        if (node.contains("line-width") || node.contains("max-lines") || node.contains("alignment"))
+            throw new IllegalArgumentException(id + "：font文字只有一行，不用line-width/max-lines/alignment");
+        if (node.getString("content", "").indexOf('\n') >= 0) throw new IllegalArgumentException(id + "：font文字只有一行");
+        return font;
     }
     /** alignment/line-width/max-lines/opacity for text only; line-width is converted to font pixels. */
     private static TextLayout.Format textFormat(ConfigurationSection node, String type, double size) {

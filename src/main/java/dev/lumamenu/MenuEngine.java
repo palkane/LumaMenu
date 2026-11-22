@@ -21,15 +21,23 @@ final class MenuEngine implements LumaMenuApi {
         default boolean cornerClose() { return true; }
         /** Default {@code close-with-escape} for pages that do not set it. */
         default boolean closeWithEscape() { return true; }
+        /**
+         * {@code escape-footer}: a corner page whose Esc is allowed and whose last two canvas rows hold nothing this
+         * player can click (hover-only areas there are dropped) is shown with a hidden native close footer, so Esc
+         * reports the close at once.
+         */
+        default boolean escapeFooter() { return false; }
         default void begin(Player player) {}
         default void end(Player player) {}
         /** Whether the camera rig may look down (straight down, or along the light in the Nether; see DisplayRenderer.Look). */
         default boolean look(Player player, boolean down) { return false; }
         /**
-         * {@code cornerClose}: Dialog-body "×" (Esc only with {@code escape}), otherwise the native close button with
-         * Esc. A corner Dialog closed by Esc tells the server nothing; {@link #tick} notices the player turning.
+         * {@link Close#CORNER}: no footer, Dialog-body "×" (Esc only with {@code escape}); a corner Dialog closed by Esc
+         * tells the server nothing, {@link #input} notices the next movement key. {@link Close#NATIVE}: the visible
+         * native close button. {@link Close#HIDDEN}: the same footer with a blank 1-wide button. Both footers send
+         * {@code exit} on Esc and take two body rows.
          */
-        void show(Player player, Component body, ClickEvent exit, int bodyWidth, boolean cornerClose, boolean escape);
+        void show(Player player, Component body, ClickEvent exit, int bodyWidth, Close close, boolean escape);
         void hide(Player player);
         void message(Player player, String text);
         void command(Player player, String command);
@@ -68,11 +76,17 @@ final class MenuEngine implements LumaMenuApi {
         }
         void failure(Throwable error);
     }
+    enum Close {
+        CORNER, NATIVE, HIDDEN;
+        boolean footer() { return this != CORNER; }
+    }
     record PresetView(List<String> labels, boolean canAdd) {}
     enum PresetAction { USE, DELETE, ADD, CANCEL }
     record PresetChoice(PresetAction action, int index) {}
     /** A form as shown: texts already expanded. */
     record FormView(String title, String submit, String cancel, List<Input> inputs) {}
+    /** Native Dialog input name of a form's {@code index}th field: only letters, digits and '_' are accepted there. */
+    static String inputName(int index) { return "f" + index; }
     /**
      * The box grows with {@code maxLength}: up to {@link #SINGLE_LINE_INPUT} a single line {@code width} GUI pixels
      * wide (about one CJK glyph per character), beyond it {@code lines} rows of {@link #INPUT_WIDTH}. Line breaks
@@ -613,6 +627,7 @@ final class MenuEngine implements LumaMenuApi {
         tokens.publish(session.player.getUniqueId(), actions);
         stamps.put(session.player.getUniqueId(), new Stamp(session.id, actions.nonce));
         boolean corner = page.cornerClose(host.cornerClose());
+        boolean escape = page.closeWithEscape(host.closeWithEscape());
         // A page that offers this player its own close control needs no Dialog "×" (Esc stays off as well).
         boolean chrome = corner && !ownClose(page, allowed);
         var hit = placed != null ? placed.hits().computeIfAbsent(Set.copyOf(hiddenControls), hidden ->
@@ -621,10 +636,19 @@ final class MenuEngine implements LumaMenuApi {
             : hiddenHits.computeIfAbsent(new HiddenHit(page.id(), mapping.key(), session.mode, session.down,
                 Set.copyOf(hiddenControls)), key -> HitGeometry.compile(page, mapping,
                 cached.prepared(), compiled.rotationHitStep(), session.mode, key.hidden()));
-        int rows = HitSurface.usableRows(page.surfaceRows(), page.surfaceOriginY(), !corner);
-        if (allowed.stream().anyMatch(index -> (chrome ? hit.chrome().surface() : hit.surface()).stream()
-                .anyMatch(patch -> patch.control() == index && patch.row() >= rows)))
+        var surface = chrome ? hit.chrome().surface() : hit.surface();
+        int footerRows = HitSurface.usableRows(page.surfaceRows(), page.surfaceOriginY(), true);
+        // Whether anything this player can use right now sits in the two rows a footer takes. The hidden footer only
+        // waits for clickable controls; hover-only areas there just lose their tooltip.
+        boolean low = allowed.stream().anyMatch(index -> surface.stream()
+            .anyMatch(patch -> patch.control() == index && patch.row() >= footerRows));
+        boolean lowClick = clicks.keySet().stream().anyMatch(index -> surface.stream()
+            .anyMatch(patch -> patch.control() == index && patch.row() >= footerRows));
+        Close close = !corner ? Close.NATIVE : escape && host.escapeFooter() && !lowClick ? Close.HIDDEN : Close.CORNER;
+        if (close == Close.NATIVE && low)
             throw new IllegalStateException(page.id() + "：原生关闭按钮页画布底部两行不能放点击区域");
+        int rows = close.footer() ? footerRows
+            : HitSurface.usableRows(page.surfaceRows(), page.surfaceOriginY(), false);
         // reach-up rows above this player's frame are off the Dialog body and stay unclickable.
         var frame = calibration.frame(session.player.getUniqueId());
         int from = HitSurface.firstRow(page.surfaceOriginY(), frame);
@@ -633,12 +657,12 @@ final class MenuEngine implements LumaMenuApi {
         var lifts = first ? HitSurface.lifts(hit.regions(), page.surfaceOriginX(), page.surfaceOriginY() + 9 * from)
             : List.<HitSurface.Lift>of();
         // Every body is as wide as the calibration probe's; a narrower canvas is padded to its place in the line.
-        host.show(session.player, HitSurface.frame(HitSurface.bind(chrome ? hit.chrome().surface() : hit.surface(),
+        host.show(session.player, HitSurface.frame(HitSurface.bind(surface,
             lifts, clicks, tips, allowed, from, rows, page.surfaceOriginX(), page.surfaceAdvance(), HitSurface.ADVANCE,
             chrome ? hit.chrome() : null, exit, session.overlay || debug.contains(session.player.getUniqueId())),
-            page.surfaceOriginY(), from, rows, HitSurface.ADVANCE, !corner, frame),
-            exit, HitSurface.BODY_WIDTH, corner, page.closeWithEscape(host.closeWithEscape()));
-        session.escape = corner && page.closeWithEscape(host.closeWithEscape());
+            page.surfaceOriginY(), from, rows, HitSurface.ADVANCE, close.footer(), frame),
+            exit, HitSurface.BODY_WIDTH, close, escape);
+        session.escape = close == Close.CORNER && escape;
         session.grace = ESCAPE_GRACE_TICKS;
     }
 
@@ -742,10 +766,10 @@ final class MenuEngine implements LumaMenuApi {
             switch (action.substring(0, action.indexOf(':'))) {
                 case "open" -> { session.open(argument); return; }
                 case "tell" -> host.message(session.player, argument);
-                // The menu closes after the command, unless the command opens another LumaMenu (see closeAfterCommand).
-                case "command" -> { closeAfterCommand(session); host.command(session.player, argument); return; }
+                // The menu closes right after the command, unless the command opened another LumaMenu (see closeAfterCommand).
+                case "command" -> { closeAfterCommand(session, () -> host.command(session.player, argument)); return; }
                 case "command-in-place" -> host.command(session.player, argument);
-                case "console" -> { closeAfterCommand(session); host.console(argument); return; }
+                case "console" -> { closeAfterCommand(session, () -> host.console(argument)); return; }
                 case "sound" -> host.sound(session.player, argument);
                 case "callback" -> session.callback.accept(new Action(session, session.page, control.id(), argument));
                 // State changes show once the whole chain has run, like DialogMenu.
@@ -1042,8 +1066,9 @@ final class MenuEngine implements LumaMenuApi {
         }) : null;
         tokens.publish(session.player.getUniqueId(), actions);
         stamps.put(session.player.getUniqueId(), new Stamp(session.id, actions.nonce));
-        host.show(session.player, HitSurface.body(hits, exit, debug.contains(session.player.getUniqueId()),
-                session.attempt.rows(), range, session.attempt.rangeLabel()), exit, HitSurface.BODY_WIDTH, true, false);
+        // Calibration has no Dialog "×" and no Esc: it ends by finishing, or by the usual teleport/damage/quit cleanup.
+        host.show(session.player, HitSurface.body(hits, null, debug.contains(session.player.getUniqueId()),
+                session.attempt.rows(), range, session.attempt.rangeLabel()), exit, HitSurface.BODY_WIDTH, Close.CORNER, false);
     }
 
     @Override public void close(Player player) { close(player, Reason.CLOSED, true); }
@@ -1062,21 +1087,17 @@ final class MenuEngine implements LumaMenuApi {
         catch (RuntimeException error) { host.failure(error); }
         ended(session, reason);
     }
-    /** Ticks a menu stays after {@code command:}/{@code console:} for the command to open another LumaMenu. */
-    static final int COMMAND_CLOSE_TICKS = 2;
     /**
-     * {@code command:}/{@code console:} end the menu, but only after the command has run: a LumaMenu it opens within
-     * {@link #COMMAND_CLOSE_TICKS} takes the session over (see {@link #open}) instead of a close and a fresh open.
-     * Clicks stop at once. A foreign Dialog the command shows still ends the menu through {@link #replaced}.
+     * {@code command:}/{@code console:} end the menu once the command has run, in the same tick: a LumaMenu the
+     * command opens meanwhile takes the session over (see {@link #open}) instead of a close and a fresh open. Clicks
+     * stop before the command runs. A foreign Dialog the command shows still ends the menu through {@link #replaced}.
      */
-    private void closeAfterCommand(Session session) {
+    private void closeAfterCommand(Session session, Runnable command) {
         UUID id = session.player.getUniqueId();
         tokens.remove(id);
         if (session.gesture != null) { session.gesture.cancel.run(); session.gesture = null; }
-        if (session.closing != null) return;
-        session.closing = host.later(() -> guarded(session.player, () -> {
-            if (sessions.get(id) == session) close(session.player, Reason.CLOSED, true);
-        }), COMMAND_CLOSE_TICKS);
+        try { command.run(); }
+        finally { if (sessions.get(id) == session) close(session.player, Reason.CLOSED, true); }
     }
     /** Removes the session from the player without touching the client. */
     private void detach(Session session) {
@@ -1085,7 +1106,6 @@ final class MenuEngine implements LumaMenuApi {
         stamps.remove(id);
         tokens.remove(id);
         if (session.gesture != null) { session.gesture.cancel.run(); session.gesture = null; }
-        if (session.closing != null) { session.closing.run(); session.closing = null; }
         session.form = null;
         session.suspended = false;
     }
@@ -1204,8 +1224,6 @@ final class MenuEngine implements LumaMenuApi {
         int grace;
         /** Movement keys last reported by the client, see {@link #keys}. */
         int keys;
-        /** Cancels the close scheduled by {@link #closeAfterCommand}. */
-        Runnable closing;
         /** Calibration check page: hit areas tinted, {@code calibrate} measures {@link #slot} again. */
         boolean overlay;
         /** The preset a calibration saves to (0: first free), or that the check page measures again. */

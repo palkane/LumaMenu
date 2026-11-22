@@ -431,9 +431,12 @@ final class DisplayRenderer {
         View view = new View(player, prepared, mode);
         views.put(player.getUniqueId(), view);
         try {
-            Body pose = body.apply(player);
+            // A Dialog releases every key, so a crouching opener stands up behind it; a rig with another eye height
+            // would make vanilla ease the camera for several ticks on the page change. Keep the opening pose.
+            Body pose = previous != null && previous.player == player ? previous.body : body.apply(player);
             if (!Double.isFinite(pose.height) || !Double.isFinite(pose.eye) || pose.height <= 0 || pose.eye <= 0)
                 pose = Body.standing(1);
+            view.body = pose;
             var eye = player.getEyeLocation();
             var look = Look.of(eye, down);
             var anchor = Camera.of(look).offset(pose.riderAboveEye());
@@ -736,7 +739,7 @@ final class DisplayRenderer {
         return text;
     }
     private static Component content(Layouts.Visual v, UnaryOperator<String> variables) {
-        return TextLayout.component(variables.apply(v.content()), color(v, variables), v.text());
+        return TextLayout.component(variables.apply(v.content()), color(v, variables), v.text(), v.source());
     }
 
     private static final class View {
@@ -750,6 +753,8 @@ final class DisplayRenderer {
         final RenderMode mode;
         final boolean[] hidden;
         org.joml.Vector3d anchor;
+        /** Pose the rig was built for; later pages of the session reuse it. */
+        Body body;
         View(Player player, List<Prepared> prepared, RenderMode mode) {
             this.player = player;
             this.prepared = prepared;

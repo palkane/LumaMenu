@@ -14,20 +14,23 @@ final class MenuResources {
     /** Half-opaque white; the hit area's text color tints it, and menu visuals stay visible behind it. */
     static final int DEBUG_ARGB = 0x8CFFFFFF;
     static void write(Path pack, boolean hideWarning) throws IOException {
-        write(pack, hideWarning, false, ImageCatalog.EMPTY, List.of());
+        write(pack, hideWarning, false, true, ImageCatalog.EMPTY, List.of());
     }
     /**
      * {@code usedModels}: item models the compiled pages reference, so vanilla image models are only written when used.
-     * {@code replaceCrosshair}: see {@link #crosshairFont}.
+     * {@code replaceCrosshair}: see {@link #crosshairFont}. {@code hideFocusOutline}: the GUI color shader drops the
+     * white focus outline of a menu Dialog body (see gui.vsh); other screens keep theirs.
      */
-    static void write(Path pack, boolean hideWarning, boolean replaceCrosshair, ImageCatalog images,
-                      Collection<String> usedModels) throws IOException {
+    static void write(Path pack, boolean hideWarning, boolean replaceCrosshair, boolean hideFocusOutline,
+                      ImageCatalog images, Collection<String> usedModels) throws IOException {
         images.write(pack, usedModels);
-        for (String shader : List.of("minecraft/shaders/core/item.vsh", "minecraft/shaders/core/item.fsh",
+        List<String> shaders = new ArrayList<>(List.of("minecraft/shaders/core/item.vsh", "minecraft/shaders/core/item.fsh",
                 "minecraft/shaders/core/entity.vsh", "minecraft/shaders/core/entity.fsh",
                 "minecraft/shaders/core/glint.vsh",
                 "minecraft/shaders/core/text.vsh", "minecraft/shaders/core/position_color.vsh",
-                "lumamenu/shaders/include/menu.glsl", "lumamenu/shaders/include/menu_light.glsl")) {
+                "lumamenu/shaders/include/menu.glsl", "lumamenu/shaders/include/menu_light.glsl"));
+        if (hideFocusOutline) shaders.add("minecraft/shaders/core/gui.vsh");
+        for (String shader : shaders) {
             String name = "assets/" + shader;
             try (var input = MenuResources.class.getResourceAsStream("/resourcepack/" + name)) {
                 if (input == null) throw new IOException("缺少菜单shader：" + name);
@@ -177,15 +180,16 @@ final class MenuResources {
     }
 
     static Path export(Path directory, boolean hideWarning) throws IOException {
-        return export(directory, hideWarning, false, ImageCatalog.EMPTY, List.of());
+        return export(directory, hideWarning, false, true, ImageCatalog.EMPTY, List.of());
     }
     static Path export(Path directory, boolean hideWarning, ImageCatalog images, Collection<String> usedModels)
             throws IOException {
-        return export(directory, hideWarning, false, images, usedModels);
+        return export(directory, hideWarning, false, true, images, usedModels);
     }
-    static Path export(Path directory, boolean hideWarning, boolean replaceCrosshair, ImageCatalog images,
-                       Collection<String> usedModels) throws IOException {
-        return zip(directory, "lumamenu-26.3.zip", staging -> write(staging, hideWarning, replaceCrosshair, images, usedModels));
+    static Path export(Path directory, boolean hideWarning, boolean replaceCrosshair, boolean hideFocusOutline,
+                       ImageCatalog images, Collection<String> usedModels) throws IOException {
+        return zip(directory, "lumamenu-26.3.zip",
+            staging -> write(staging, hideWarning, replaceCrosshair, hideFocusOutline, images, usedModels));
     }
     private interface Writer { void write(Path staging) throws IOException; }
     private static Path zip(Path directory, String name, Writer writer) throws IOException {

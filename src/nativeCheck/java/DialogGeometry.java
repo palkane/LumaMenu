@@ -24,11 +24,13 @@ final class DialogGeometry {
         CORNER,
         /** Notice whose single action is the native close button: corner-close false pages. */
         NOTICE,
+        /** The same notice with a blank 1-wide button: escape-footer pages. */
+        HIDDEN,
         /** Dialog list with exit footer: the previous corner-close false transport, kept as a fault control. */
         LIST_FOOTER
     }
-    record Layout(int header, int footer, int viewport, int bodyX, int bodyY, int bodyHeight, double maxScroll,
-                  boolean escape, List<Identifier> escapeSent) {}
+    record Layout(int header, int footer, int viewport, int bodyX, int bodyY, int bodyWidth, int bodyHeight,
+                  double maxScroll, boolean escape, List<Identifier> escapeSent, List<int[]> buttons) {}
 
     private static final Identifier EXIT = Identifier.parse("lumamenu:footer");
 
@@ -58,6 +60,8 @@ final class DialogGeometry {
             });
         var exit = new ActionButton(new CommonButtonData(Component.literal("关闭"), Optional.empty(), 60),
             Optional.of(new StaticAction(new ClickEvent.Custom(EXIT, Optional.empty()))));
+        var hidden = new ActionButton(new CommonButtonData(Component.empty(), Optional.empty(), 1),
+            Optional.of(new StaticAction(new ClickEvent.Custom(EXIT, Optional.empty()))));
         boolean escape = mode != Mode.CORNER;
         var common = new CommonDialogData(Component.literal(" "), Optional.empty(), escape, false,
             DialogAction.NONE, List.of(new net.minecraft.server.dialog.body.PlainMessage(body, width)), List.of());
@@ -67,6 +71,7 @@ final class DialogGeometry {
             case LIST_FOOTER -> new DialogListDialogScreen(null,
                 new DialogListDialog(common, net.minecraft.core.HolderSet.direct(), Optional.of(exit), 1, 1), connection);
             case NOTICE -> new SimpleDialogScreen<>(null, new NoticeDialog(common, exit), connection);
+            case HIDDEN -> new SimpleDialogScreen<>(null, new NoticeDialog(common, hidden), connection);
         };
         screen.width = screenWidth; screen.height = screenHeight;
         gui.selected = screen;
@@ -80,11 +85,16 @@ final class DialogGeometry {
         ((net.minecraft.client.gui.layouts.Layout) get(ScrollableLayout.class, scroll, "content"))
             .visitWidgets(child -> { if (child instanceof FocusableTextWidget widget) widgets.add(widget); });
         var widget = widgets.getFirst();
+        List<int[]> buttons = new ArrayList<>();
+        layout.visitWidgets(child -> {
+            if (child instanceof net.minecraft.client.gui.components.Button button)
+                buttons.add(new int[]{button.getX(), button.getY(), button.getWidth(), button.getHeight()});
+        });
         boolean closesOnEsc = screen.shouldCloseOnEsc();
         if (closesOnEsc) screen.keyPressed(new KeyEvent(com.mojang.blaze3d.platform.InputConstants.KEY_ESCAPE, 0, 0));
         Screen after = gui.selected;
         return new Layout(layout.getHeaderHeight(), layout.getFooterHeight(), layout.getContentHeight(),
-            widget.getX(), widget.getY(), widget.getHeight(), max[0], closesOnEsc && after == null, List.copyOf(sent));
+            widget.getX(), widget.getY(), widget.getWidth(), widget.getHeight(), max[0], closesOnEsc && after == null, List.copyOf(sent), List.copyOf(buttons));
     }
 
     static Component rows(int count) {

@@ -40,6 +40,16 @@ tasks.register('menuChecks', JavaExec) {
     systemProperty 'java.awt.headless', 'true'
 }
 check.dependsOn menuChecks
+tasks.register('stressChecks', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.lumamenu.StressChecks'
+    systemProperty 'java.awt.headless', 'true'
+    maxHeapSize = '3g'
+    args providers.gradleProperty('stressData').orElse('').get(),
+        providers.gradleProperty('stressPlayers').orElse('').get(),
+        providers.gradleProperty('stressTicks').orElse('').get()
+}
 test.failOnNoDiscoveredTests = false
 
 sourceSets {
